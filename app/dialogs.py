@@ -112,10 +112,15 @@ def open_app_dialog(app_ui, existing=None):
                     name_in.update()
                     refresh_preview()
 
-    picker = ft.FilePicker(on_result=on_pick)
-    if picker not in page.overlay:
+    # Reuse a single FilePicker per session (don't stack a new one in the
+    # overlay every time the dialog opens).
+    picker = getattr(app_ui, "_file_picker", None)
+    if picker is None:
+        picker = ft.FilePicker()
+        app_ui._file_picker = picker
         page.overlay.append(picker)
         page.update()
+    picker.on_result = on_pick
 
     def browse():
         picker.pick_files(dialog_title="Выберите приложение", allow_multiple=False)

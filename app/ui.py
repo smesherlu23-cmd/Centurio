@@ -605,22 +605,21 @@ class CenturioUI:
         return ft.Container(ft.Row(row, spacing=10), padding=ft.padding.only(0, 10, 0, 14))
 
     def _grid(self, apps):
-        grid = ft.GridView(max_extent=210, child_aspect_ratio=0.80, spacing=15, run_spacing=15,
-                           runs_count=0)
-        for a in apps:
-            grid.controls.append(self._tile(a))
-        # Height must be bounded inside a scrolling Column; compute rows.
-        import math
-        cols = max(1, 5)
-        rows = math.ceil(len(apps) / cols)
-        grid.height = rows * (210 / 0.80) + (rows - 1) * 15 + 4
-        return ft.Container(grid, padding=ft.padding.only(0, 0, 0, 10))
+        # A wrapping row of fixed-size tiles flows and sizes to its content, so it
+        # never clips rows regardless of window width (unlike a fixed-height GridView).
+        tiles = [self._tile(a) for a in apps]
+        return ft.Container(ft.Row(tiles, wrap=True, spacing=15, run_spacing=15),
+                            padding=ft.padding.only(0, 0, 0, 10))
 
     def _tile(self, a):
+        compact = self.state()["settings"].get("tile_size") == "compact"
+        width = 152 if compact else 196
+        cover_h = round(width * 0.62)
+        glyph_size = 34 if compact else 46
         c1, c2 = C.cover_colors(a["hue"])
         running = a["id"] in self.running
         cover_children = [
-            ft.Container(T(initials(a["name"]), size=46, weight=ft.FontWeight.BOLD,
+            ft.Container(T(initials(a["name"]), size=glyph_size, weight=ft.FontWeight.BOLD,
                                  color=C.glyph_color(a["hue"])),
                          expand=True, alignment=ft.alignment.center,
                          gradient=ft.LinearGradient(begin=ft.alignment.top_left,
@@ -656,10 +655,10 @@ class CenturioUI:
             padding=ft.padding.only(13, 11, 13, 12))
 
         tile = ft.Container(
-            ft.Column([ft.Container(ft.Stack(cover_children, expand=True), expand=True,
+            ft.Column([ft.Container(ft.Stack(cover_children, expand=True), height=cover_h,
                                     clip_behavior=ft.ClipBehavior.HARD_EDGE), foot],
-                      spacing=0, expand=True),
-            bgcolor=C.PANEL, border=ft.border.all(1, C.LINE), border_radius=14,
+                      spacing=0, tight=True),
+            width=width, bgcolor=C.PANEL, border=ft.border.all(1, C.LINE), border_radius=14,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
         )
 

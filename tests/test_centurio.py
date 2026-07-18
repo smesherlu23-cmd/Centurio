@@ -85,10 +85,18 @@ def test_ui_build():
         from unittest.mock import MagicMock
         from app.ui import CenturioUI
         from app import dialogs
-        from app.seed import seed_demo
     except Exception as exc:  # Flet not installed — skip UI tests.
         print("SKIP UI tests (Flet unavailable):", exc)
         return
+
+    def _sample(store):
+        store.add_app({"name": "Notion", "sub": "Документы", "category_id": "work",
+                       "path": "/x/notion", "favorite": True})
+        store.add_app({"name": "VS Code", "sub": "Редактор", "category_id": "dev",
+                       "path": "/x/code", "quick": True})
+        a = store.add_app({"name": "Chrome", "sub": "Браузер", "category_id": "work",
+                           "path": "/x/chrome"})
+        store.mark_launched(a["id"])
 
     class FakePage:
         def __init__(self):
@@ -107,7 +115,7 @@ def test_ui_build():
 
     with tempfile.TemporaryDirectory() as d:
         store = Store(os.path.join(d, "data.json"))
-        seed_demo(store)
+        _sample(store)
         page = FakePage()
         ui = CenturioUI(page, store, MagicMock())
 

@@ -28,7 +28,6 @@ def main(page: ft.Page):
     icon_path = ensure_icons(ASSETS_DIR)
 
     store = Store()
-    _seed_if_requested(store)
 
     is_web = page.web or os.environ.get("CENTURIO_WEB") == "1"
 
@@ -138,7 +137,12 @@ def _show_window(page):
     try:
         page.window.visible = True
         page.window.minimized = False
+        page.update()
+    except Exception:
+        pass
+    try:
         page.window.to_front()
+        page.window.focused = True
         page.update()
     except Exception:
         pass
@@ -158,16 +162,6 @@ def _quit(page):
         page.window.destroy()
     except Exception:
         os._exit(0)
-
-
-def _seed_if_requested(store: Store):
-    """Populate a demo library (for preview/screenshots) when asked and empty."""
-    if os.environ.get("CENTURIO_SEED") != "1":
-        return
-    if store.state()["apps"]:
-        return
-    from app.seed import seed_demo
-    seed_demo(store)
 
 
 if __name__ == "__main__":
