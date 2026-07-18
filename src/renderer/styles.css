@@ -273,11 +273,10 @@ button { font-family: var(--font); }
 .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; cursor: pointer; transition: transform .12s, border-color .12s, box-shadow .12s; }
 .tile:hover { border-color: var(--line-5); transform: translateY(-3px); box-shadow: 0 16px 34px rgba(0, 0, 0, 0.5); }
 .tile .cover { aspect-ratio: 16 / 10.5; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
-.tile .cover .sheen { position: absolute; inset: 0; background: radial-gradient(130px 100px at 24% 10%, rgba(255, 255, 255, 0.18), transparent 70%); }
-.tile .cover .glyph { font-size: 46px; font-weight: 800; letter-spacing: -0.03em; position: relative; text-shadow: 0 2px 12px rgba(0, 0, 0, 0.25); }
-.tile .run-badge { position: absolute; top: 10px; left: 10px; display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 600; color: #7ee2a8; background: rgba(10, 14, 12, 0.55); border: 1px solid rgba(126, 226, 168, 0.25); border-radius: 20px; padding: 2.5px 8px; backdrop-filter: blur(4px); }
+.tile .cover .glyph { font-size: 46px; font-weight: 800; letter-spacing: -0.03em; position: relative; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.35); }
+.tile .run-badge { position: absolute; top: 10px; left: 10px; display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 600; color: #d8fce6; background: rgba(8, 12, 10, 0.82); border: 1px solid rgba(126, 226, 168, 0.35); border-radius: 20px; padding: 2.5px 8px; }
 .tile .run-badge .d { width: 5px; height: 5px; border-radius: 50%; background: var(--green); }
-.tile .star { position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: rgba(10, 10, 12, 0.5); backdrop-filter: blur(4px); opacity: 0; transition: opacity .12s; color: #fff; }
+.tile .star { position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: rgba(8, 8, 10, 0.78); opacity: 0; transition: opacity .12s; color: #fff; }
 .tile .star.on { opacity: 1; color: #f5c518; }
 .tile:hover .star { opacity: 1; }
 .tile .play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(6, 6, 8, 0.32); opacity: 0; transition: opacity .14s; }

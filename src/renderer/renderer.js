@@ -11,10 +11,10 @@
   const modalRoot = document.getElementById('modal-root');
   const toastRoot = document.getElementById('toast-root');
 
-  // ---- Colour helpers (mirror the design's oklch-by-hue tinting) ----
-  const cover = (h) => `linear-gradient(145deg, oklch(0.52 0.15 ${h}), oklch(0.33 0.11 ${h}))`;
-  const chip = (h) => `linear-gradient(145deg, oklch(0.56 0.16 ${h}), oklch(0.42 0.12 ${h}))`;
-  const glyphFg = (h) => `oklch(0.97 0.03 ${h})`;
+  // ---- Colour helpers: clean, saturated per-app tints (no haze, no glare) ----
+  const cover = (h) => `linear-gradient(145deg, oklch(0.64 0.19 ${h}), oklch(0.46 0.19 ${h}))`;
+  const chip = (h) => `linear-gradient(145deg, oklch(0.68 0.19 ${h}), oklch(0.52 0.19 ${h}))`;
+  const glyphFg = () => `#ffffff`;
 
   // ---- Icons ----
   const ICONS = {
@@ -445,7 +445,6 @@
 
     return el('div', { class: 'tile', onclick: () => launch(a.id), oncontextmenu: (e) => { e.preventDefault(); openAppModal(a); } },
       el('div', { class: 'cover', style: `background:${cover(a.hue)}` },
-        el('span', { class: 'sheen' }),
         el('span', { class: 'glyph', style: `color:${glyphFg(a.hue)}` }, initials(a.name)),
         isRunning ? el('span', { class: 'run-badge' }, el('span', { class: 'd' }), 'Запущено') : null,
         star,
