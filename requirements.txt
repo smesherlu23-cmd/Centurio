@@ -1,0 +1,7 @@
+# Centurio — desktop app (Flet / Python)
+flet==0.28.3
+
+# System-tray support ("свернуть в трей"). Optional but recommended:
+# without them the app still runs, it just won't hide to a tray icon.
+pystray>=0.19.5
+Pillow>=10.0.0
