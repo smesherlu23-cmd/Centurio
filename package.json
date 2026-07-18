@@ -1,0 +1,40 @@
+{
+  "name": "centurio",
+  "version": "1.2.0",
+  "description": "Centurio — персональная, всегда доступная из трея горячая панель приложений: быстрый запуск, категории, автозапуск.",
+  "author": "Centurio",
+  "license": "MIT",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "postinstall": "node scripts/gen-icon.js",
+    "gen-icon": "node scripts/gen-icon.js",
+    "check": "node -e \"['src/main/main.js','src/main/preload.js','src/main/store.js','src/main/launcher.js','src/main/tray.js','src/renderer/renderer.js','src/renderer/demo-data.js'].forEach(f=>require('child_process').execSync('node --check '+f,{stdio:'inherit'}))\"",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.centurio.app",
+    "productName": "Centurio",
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.png"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icon.png",
+      "category": "Utility"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}

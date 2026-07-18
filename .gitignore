@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out/
+build/Release/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Runtime data (local dev)
+*.tmp
+centurio-data.json
+
+# Generated icons (produced by `npm run gen-icon` / postinstall)
+assets/*.png
