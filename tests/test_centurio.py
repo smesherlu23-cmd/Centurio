@@ -80,6 +80,17 @@ def test_icon():
             ok(fh.read(8) == b"\x89PNG\r\n\x1a\n", "valid PNG signature")
 
 
+def test_discovery():
+    from app import discovery
+    apps = discovery.discover_apps()
+    ok(isinstance(apps, list), "discover_apps returns a list")
+    ok(all(("name" in a and "path" in a) for a in apps), "discovered apps have name+path")
+    ok(all(a == b for a, b in zip(apps, sorted(apps, key=lambda x: x["name"].lower()))),
+       "discovered apps are sorted")
+    ok(discovery._looks_like_junk("Uninstall Foo") is True, "junk filter flags uninstallers")
+    ok(discovery._looks_like_junk("Google Chrome") is False, "junk filter keeps real apps")
+
+
 def test_ui_build():
     try:
         from unittest.mock import MagicMock
@@ -148,6 +159,7 @@ if __name__ == "__main__":
     test_store()
     test_colors()
     test_icon()
+    test_discovery()
     test_ui_build()
     print(f"\n{_passed} passed, {_failed} failed")
     sys.exit(1 if _failed else 0)

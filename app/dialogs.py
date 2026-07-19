@@ -39,6 +39,164 @@ def _primary_btn(label, on_click):
 
 
 def open_app_dialog(app_ui, existing=None):
+    """Route: adding uses the installed-apps picker; editing uses the detail form."""
+    if existing is None:
+        open_add_picker(app_ui)
+    else:
+        _open_detail_dialog(app_ui, existing)
+
+
+def open_add_picker(app_ui):
+    """Add apps by picking from a list of already-installed applications.
+
+    The list is discovered automatically (Start Menu / .desktop / .app). The
+    user just clicks an app to add it — no naming or describing needed. A
+    manual file picker remains available for anything not in the list.
+    """
+    import threading
+
+    from .discovery import discover_apps
+
+    page = app_ui.page
+    store = app_ui.store
+    cats = app_ui.categories()
+
+    ui_state = {"category_id": cats[0]["id"] if cats else "work", "query": "", "apps": None}
+    if app_ui.filter.startswith("category:"):
+        ui_state["category_id"] = app_ui.filter.split(":", 1)[1]
+
+    existing_paths = {(a.get("path") or "").lower() for a in store.state()["apps"]}
+
+    cat_dd = ft.Dropdown(
+        value=ui_state["category_id"], width=200, bgcolor=C.BG_1, border_color=C.LINE,
+        focused_border_color=C.LINE_5, color=C.TEXT, text_size=13, dense=True,
+        options=[ft.dropdown.Option(key=c["id"], text=c["name"]) for c in cats],
+        on_change=lambda e: ui_state.__setitem__("category_id", e.control.value))
+
+    search = _text_input("", "Поиск среди установленных приложений…")
+    status = T("Сканирование установленных приложений…", size=12, color=C.MUTED_2, font_family="monospace")
+    list_view = ft.ListView(spacing=6, expand=True)
+
+    def add_app(a):
+        path = a.get("path") or ""
+        if path.lower() in existing_paths:
+            return
+        store.add_app({"name": a["name"], "path": path, "category_id": ui_state["category_id"]})
+        existing_paths.add(path.lower())
+        app_ui._on_library_changed()
+        app_ui._toast(f"Добавлено: {a['name']}")
+        render()
+
+    def make_row(a):
+        added = (a.get("path") or "").lower() in existing_paths
+        hue = hue_from_string(a["name"])
+        c1, c2 = C.chip_colors(hue)
+        icon = ft.Container(
+            T(initials(a["name"]), size=15, weight=ft.FontWeight.BOLD, color=C.glyph_color(hue)),
+            width=34, height=34, border_radius=9, alignment=ft.alignment.center,
+            gradient=ft.LinearGradient(begin=ft.alignment.top_left, end=ft.alignment.bottom_right,
+                                       colors=[c1, c2]))
+        trailing = ft.Icon(ft.Icons.CHECK_CIRCLE if added else ft.Icons.ADD_CIRCLE_OUTLINE,
+                           size=20, color=C.GREEN if added else C.MUTED)
+        row = ft.Container(
+            ft.Row([icon,
+                    ft.Column([T(a["name"], size=13, weight=ft.FontWeight.W_600, color=C.TEXT,
+                                 max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                               T(a.get("path") or "", size=10.5, color=C.MUTED_2, max_lines=1,
+                                 overflow=ft.TextOverflow.ELLIPSIS, font_family="monospace")],
+                              spacing=1, expand=True, tight=True),
+                    trailing], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.symmetric(8, 12), border_radius=10, bgcolor=C.BG_1,
+            border=ft.border.all(1, C.LINE), opacity=0.5 if added else 1,
+            on_click=None if added else (lambda e, ap=a: add_app(ap)))
+        if not added:
+            app_ui._hoverable(row, C.BG_1, C.PANEL_2)
+        return row
+
+    def render():
+        list_view.controls = []
+        apps = ui_state["apps"]
+        if apps is None:
+            list_view.controls.append(ft.Row(
+                [ft.ProgressRing(width=15, height=15, stroke_width=2, color=C.MUTED),
+                 T("Сканирование…", size=12.5, color=C.MUTED_2)], spacing=10))
+        else:
+            q = ui_state["query"].strip().lower()
+            shown = [a for a in apps if q in a["name"].lower() or q in (a.get("path") or "").lower()]
+            if not shown:
+                list_view.controls.append(ft.Container(
+                    T("Установленные приложения не найдены — добавьте файл вручную." if not apps
+                      else "Ничего не найдено.", size=12.5, color=C.MUTED_2),
+                    padding=ft.padding.symmetric(16, 4)))
+            for a in shown:
+                list_view.controls.append(make_row(a))
+        if list_view.page:
+            list_view.update()
+
+    def on_query(e):
+        ui_state["query"] = e.control.value
+        render()
+    search.on_change = on_query
+
+    def load():
+        found = discover_apps()
+        ui_state["apps"] = found
+        status.value = (f"Найдено приложений: {len(found)}" if found
+                        else "Ничего не нашлось автоматически — используйте «Указать файл вручную».")
+        if status.page:
+            status.update()
+        render()
+
+    # Manual fallback — still no naming: the file name becomes the app name.
+    def on_pick(e):
+        if not e.files:
+            return
+        f = e.files[0]
+        path = f.path or f.name
+        base = (f.name or "").rsplit(".", 1)[0].replace("-", " ").replace("_", " ").strip()
+        name = (base[:1].upper() + base[1:]) if base else "Приложение"
+        store.add_app({"name": name, "path": path, "category_id": ui_state["category_id"]})
+        existing_paths.add((path or "").lower())
+        app_ui._on_library_changed()
+        app_ui._toast(f"Добавлено: {name}")
+        render()
+
+    picker = getattr(app_ui, "_file_picker", None)
+    if picker is None:
+        picker = ft.FilePicker()
+        app_ui._file_picker = picker
+        page.overlay.append(picker)
+        page.update()
+    picker.on_result = on_pick
+
+    def browse():
+        picker.pick_files(dialog_title="Выберите приложение", allow_multiple=False)
+
+    body = ft.Column([
+        T("Выберите приложения из установленных — название подставится автоматически.",
+          size=12.5, color=C.MUTED_2),
+        ft.Row([T("Добавить в категорию", size=12.5, color=C.TEXT_2), cat_dd],
+               alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        search,
+        ft.Container(list_view, height=300, bgcolor=C.BG_0, border_radius=10,
+                     border=ft.border.all(1, C.LINE_2), padding=ft.padding.all(8)),
+        status,
+    ], spacing=10, tight=True, width=520)
+
+    dialog = ft.AlertDialog(
+        modal=True, bgcolor=C.PANEL,
+        title=T("Добавить приложение", size=18, weight=ft.FontWeight.BOLD, color=C.TEXT),
+        content=body,
+        actions=[ft.Row([_outline_btn("Указать файл вручную", ft.Icons.FOLDER_OPEN, browse),
+                         ft.Container(expand=True),
+                         _primary_btn("Готово", lambda: page.close(dialog))])],
+        shape=ft.RoundedRectangleBorder(radius=16))
+    page.open(dialog)
+    render()
+    threading.Thread(target=load, daemon=True).start()
+
+
+def _open_detail_dialog(app_ui, existing):
     page = app_ui.page
     store = app_ui.store
     is_edit = existing is not None
