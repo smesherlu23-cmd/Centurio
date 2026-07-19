@@ -61,9 +61,8 @@ def open_add_picker(app_ui):
     store = app_ui.store
     cats = app_ui.categories()
 
+    # Category is chosen explicitly by the user (not inferred from the current view).
     ui_state = {"category_id": cats[0]["id"] if cats else "work", "query": "", "apps": None}
-    if app_ui.filter.startswith("category:"):
-        ui_state["category_id"] = app_ui.filter.split(":", 1)[1]
 
     existing_paths = {(a.get("path") or "").lower() for a in store.state()["apps"]}
 

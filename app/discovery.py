@@ -58,45 +58,112 @@ def _looks_like_junk(name: str) -> bool:
     return any(tok in n for tok in _JUNK_TOKENS)
 
 
+# System / runtime executables that live outside the Windows dir but are not
+# things a user launches from a hot-panel.
+_WIN_NAME_JUNK = ("node.js", "command prompt", "командная строка", "stack builder",
+                  "recovery drive", "диск восстановлен", "verifier", "debugger",
+                  "redistributable", "runtime", "hotfix", "update for", "sdk ",
+                  "web platform", "webview")
+
+
+def _is_windows_system(name: str, path: str) -> bool:
+    """True for OS/system executables the user shouldn't need to launch."""
+    p = (path or "").lower().replace("/", "\\")
+    # Anything under the Windows directory: System32, SysWOW64, WinSxS, Installer…
+    # This catches charmap, control (Administrative Tools), appverif, dfrgui,
+    # RecoveryDrive, the various *PowerShell*, @Bios (Windows\Installer\…) etc.
+    if "\\windows\\" in f"\\{p}" or p.startswith(os.environ.get("SystemRoot", "c:\\windows").lower()):
+        return True
+    n = (name or "").lower()
+    if _looks_like_junk(name) or any(t in n for t in _WIN_NAME_JUNK):
+        return True
+    return False
+
+
 # ---------------- Windows ----------------
+# PowerShell gathers installed apps from three sources so the list is
+# comprehensive (Start Menu shortcuts, Programs & Features / Uninstall, and
+# registered App Paths), then Python filters and de-duplicates them.
+_WIN_PS = r"""
+$ErrorActionPreference='SilentlyContinue'
+$sh=New-Object -ComObject WScript.Shell
+$out=New-Object System.Collections.ArrayList
+function Add-App($n,$p){ if($n -and $p){ [void]$out.Add([PSCustomObject]@{name="$n";path="$p"}) } }
+
+# 1) Start Menu shortcuts -> target .exe
+$menus=@(__DIRS__)
+foreach($d in $menus){
+  Get-ChildItem -LiteralPath $d -Recurse -Filter *.lnk 2>$null | ForEach-Object {
+    $t=$sh.CreateShortcut($_.FullName); $p=$t.TargetPath
+    if($p -and $p.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $p)){ Add-App $_.BaseName $p }
+  }
+}
+
+# 2) Programs & Features (Uninstall) -> DisplayName + main exe from DisplayIcon
+$uks=@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+       'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+       'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall')
+foreach($k in $uks){
+  Get-ChildItem -LiteralPath $k 2>$null | ForEach-Object {
+    $pr=Get-ItemProperty -LiteralPath $_.PSPath 2>$null
+    if(-not $pr.DisplayName){ return }
+    if($pr.SystemComponent -eq 1){ return }
+    $icon=$pr.DisplayIcon
+    if($icon){
+      $exe=($icon -split ',')[0].Trim('"')
+      if($exe -and $exe.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $exe)){ Add-App $pr.DisplayName $exe }
+    }
+  }
+}
+
+# 3) Registered App Paths -> default value is the exe
+$aps=@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths',
+       'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths')
+foreach($k in $aps){
+  Get-ChildItem -LiteralPath $k 2>$null | ForEach-Object {
+    $p=(Get-Item -LiteralPath $_.PSPath).GetValue('')
+    if($p){ $p=$p.Trim('"') }
+    if($p -and $p.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $p)){
+      Add-App ([System.IO.Path]::GetFileNameWithoutExtension($p)) $p
+    }
+  }
+}
+$out | ConvertTo-Json -Compress
+"""
+
+
 def _discover_windows() -> list[dict]:
+    import json
+
     prog_data = os.environ.get("ProgramData", r"C:\ProgramData")
     appdata = os.environ.get("APPDATA", "")
     dirs = [os.path.join(prog_data, r"Microsoft\Windows\Start Menu\Programs")]
     if appdata:
         dirs.append(os.path.join(appdata, r"Microsoft\Windows\Start Menu\Programs"))
     dirs = [d for d in dirs if os.path.isdir(d)]
-    if not dirs:
-        return []
 
     dir_list = ",".join("'" + d.replace("'", "''") + "'" for d in dirs)
-    ps = (
-        "$ErrorActionPreference='SilentlyContinue';"
-        "$sh=New-Object -ComObject WScript.Shell;"
-        f"$dirs=@({dir_list});$out=@();"
-        "foreach($d in $dirs){"
-        " Get-ChildItem -LiteralPath $d -Recurse -Filter *.lnk 2>$null | ForEach-Object {"
-        "  $t=$sh.CreateShortcut($_.FullName);$p=$t.TargetPath;"
-        "  if($p -and $p.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $p)){"
-        "   $out+=[PSCustomObject]@{name=$_.BaseName;path=$p}}}}"
-        "$out|ConvertTo-Json -Compress"
-    )
-    import json
-    creationflags = 0x08000000  # CREATE_NO_WINDOW
+    ps = _WIN_PS.replace("__DIRS__", dir_list)
+
     res = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                         capture_output=True, text=True, timeout=30, creationflags=creationflags)
+                         capture_output=True, text=True, timeout=40,
+                         creationflags=0x08000000)  # CREATE_NO_WINDOW
     out = (res.stdout or "").strip()
     if not out:
         return []
-    data = json.loads(out)
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return []
     if isinstance(data, dict):
         data = [data]
+
     apps = []
     for x in data:
         name, path = x.get("name"), x.get("path")
-        if not name or not path or _looks_like_junk(name):
+        if not name or not path or _is_windows_system(name, path):
             continue
-        apps.append({"name": name, "path": path, "source": "startmenu"})
+        apps.append({"name": name, "path": path, "source": "windows"})
     return apps
 
 

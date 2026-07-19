@@ -89,6 +89,13 @@ def test_discovery():
        "discovered apps are sorted")
     ok(discovery._looks_like_junk("Uninstall Foo") is True, "junk filter flags uninstallers")
     ok(discovery._looks_like_junk("Google Chrome") is False, "junk filter keeps real apps")
+    # System-app filter (Windows): OS tools out, real apps in.
+    ok(discovery._is_windows_system("Character Map", r"C:\WINDOWS\system32\charmap.exe") is True,
+       "system filter drops Windows-dir tools")
+    ok(discovery._is_windows_system("Node.js", r"C:\Program Files\nodejs\node.exe") is True,
+       "system filter drops runtimes like Node.js")
+    ok(discovery._is_windows_system("Google Chrome", r"C:\Program Files\Google\Chrome\chrome.exe") is False,
+       "system filter keeps real apps")
 
 
 def test_ui_build():

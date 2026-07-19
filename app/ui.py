@@ -142,7 +142,11 @@ class CenturioUI:
 
     def refresh(self):
         self.rail_container.content = self._build_rail()
-        self.sidebar_container.content = self._build_sidebar()
+        # The sidebar ("Показать" menu) belongs to the all-apps view; a specific
+        # category shows just its apps with no sidebar.
+        show_sidebar = self._is_all_view()
+        self.sidebar_container.visible = show_sidebar
+        self.sidebar_container.content = self._build_sidebar() if show_sidebar else None
         self.content_col.controls = self._build_content()
         self.status_container.content = self._build_statusbar()
         self.page.update()
@@ -234,15 +238,13 @@ class CenturioUI:
         return ft.Row([bar, ft.Container(inner, expand=True, alignment=ft.alignment.center)],
                       spacing=0)
 
+    def _is_all_view(self):
+        # The "all applications" view family (grid rail item): all + its filters.
+        return not self.filter.startswith("category:")
+
     def _build_rail(self):
         items = [
-            ft.Container(T("C", size=20, weight=ft.FontWeight.BOLD, color=C.BG_1),
-                         width=44, height=44, border_radius=13, alignment=ft.alignment.center,
-                         gradient=ft.LinearGradient(begin=ft.alignment.top_left,
-                                                    end=ft.alignment.bottom_right,
-                                                    colors=["#f5f5f7", "#9a9aa2"])),
-            ft.Container(width=28, height=1, bgcolor="#1e1e22", margin=ft.margin.symmetric(14, 0)),
-            self._rail_item(ft.Icons.GRID_VIEW, self.filter == "all",
+            self._rail_item(ft.Icons.GRID_VIEW, self._is_all_view(),
                             lambda: self._set_filter("all"), "Все приложения"),
         ]
         for cat in self.categories():
