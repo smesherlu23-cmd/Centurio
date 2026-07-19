@@ -83,7 +83,7 @@ def open_add_picker(app_ui):
         if path.lower() in existing_paths:
             return
         store.add_app({"name": a["name"], "path": path, "icon": a.get("icon"),
-                       "category_id": ui_state["category_id"]})
+                       "icon_fit": a.get("icon_fit"), "category_id": ui_state["category_id"]})
         existing_paths.add(path.lower())
         app_ui._on_library_changed()
         app_ui._toast(f"Добавлено: {a['name']}")

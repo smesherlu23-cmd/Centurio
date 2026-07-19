@@ -103,6 +103,7 @@ class Store:
             "category_id": app.get("category_id") or (cats[0]["id"] if cats else "work"),
             "hue": app["hue"] if isinstance(app.get("hue"), int) else hue_from_string(app.get("name") or app.get("path") or ""),
             "icon": app.get("icon") or None,
+            "icon_fit": app.get("icon_fit") or "contain",
             "favorite": bool(app.get("favorite")),
             "quick": bool(app.get("quick")),
             "last_launched": 0,
@@ -120,7 +121,7 @@ class Store:
         app = self.get_app(app_id)
         if not app:
             return None
-        for key in ("name", "path", "args", "sub", "category_id", "hue", "icon", "favorite", "quick"):
+        for key in ("name", "path", "args", "sub", "category_id", "hue", "icon", "icon_fit", "favorite", "quick"):
             if key in patch:
                 app[key] = patch[key]
         self._persist()

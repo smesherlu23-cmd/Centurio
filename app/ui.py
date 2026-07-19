@@ -199,8 +199,9 @@ class CenturioUI:
         coloured letter chip. Works for stored apps and discovered dicts."""
         b64 = img_b64(a.get("icon"))
         if b64:
+            fit = ft.ImageFit.COVER if a.get("icon_fit") == "cover" else ft.ImageFit.CONTAIN
             return ft.Container(
-                ft.Image(src_base64=b64, width=size, height=size, fit=ft.ImageFit.CONTAIN),
+                ft.Image(src_base64=b64, width=size, height=size, fit=fit),
                 width=size, height=size, border_radius=radius, bgcolor="#17171b",
                 alignment=ft.alignment.center, clip_behavior=ft.ClipBehavior.HARD_EDGE)
         hue = app_hue(a)
@@ -212,20 +213,27 @@ class CenturioUI:
                                        colors=[c1, c2]))
 
     def _cover_content(self, a, cover_h):
-        """Tile cover: (gradient, glyph). Real icon on a neutral cover, or the
-        big letter on a coloured gradient."""
+        """The tile cover base container: game art fills it, an app icon sits
+        centred on a neutral cover, and iconless apps show a coloured letter."""
         b64 = img_b64(a.get("icon"))
+        if b64 and a.get("icon_fit") == "cover":
+            return ft.Container(ft.Image(src_base64=b64, fit=ft.ImageFit.COVER, expand=True),
+                                expand=True, bgcolor="#131317")
         if b64:
             px = min(int(cover_h * 0.62), 88)
-            grad = ft.LinearGradient(begin=ft.alignment.top_left, end=ft.alignment.bottom_right,
-                                     colors=["#1e1e24", "#131317"])
-            return grad, ft.Image(src_base64=b64, width=px, height=px, fit=ft.ImageFit.CONTAIN)
+            return ft.Container(
+                ft.Image(src_base64=b64, width=px, height=px, fit=ft.ImageFit.CONTAIN),
+                expand=True, alignment=ft.alignment.center,
+                gradient=ft.LinearGradient(begin=ft.alignment.top_left, end=ft.alignment.bottom_right,
+                                           colors=["#1e1e24", "#131317"]))
         hue = app_hue(a)
         c1, c2 = C.cover_colors(hue)
-        grad = ft.LinearGradient(begin=ft.alignment.top_left, end=ft.alignment.bottom_right,
-                                 colors=[c1, c2])
         gsize = 34 if self.state()["settings"].get("tile_size") == "compact" else 46
-        return grad, T(initials(a["name"]), size=gsize, weight=ft.FontWeight.BOLD, color=C.glyph_color(hue))
+        return ft.Container(
+            T(initials(a["name"]), size=gsize, weight=ft.FontWeight.BOLD, color=C.glyph_color(hue)),
+            expand=True, alignment=ft.alignment.center,
+            gradient=ft.LinearGradient(begin=ft.alignment.top_left, end=ft.alignment.bottom_right,
+                                       colors=[c1, c2]))
 
     # ---------- titlebar ----------
     def _win_btn(self, icon_name, tooltip, handler, danger=False):
@@ -672,10 +680,7 @@ class CenturioUI:
         width = 152 if compact else 196
         cover_h = round(width * 0.62)
         running = a["id"] in self.running
-        grad, glyph = self._cover_content(a, cover_h)
-        cover_children = [
-            ft.Container(glyph, expand=True, alignment=ft.alignment.center, gradient=grad),
-        ]
+        cover_children = [self._cover_content(a, cover_h)]
         if running:
             cover_children.append(ft.Container(
                 ft.Row([ft.Container(width=5, height=5, border_radius=3, bgcolor=C.GREEN),

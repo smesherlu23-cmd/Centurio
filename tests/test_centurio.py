@@ -100,6 +100,9 @@ def test_discovery():
     ok(discovery._vdf_val('"appid" "570" "name" "Dota 2"', "appid") == "570", "vdf value parsed")
     ok(discovery._vdf_val("nothing", "name") is None, "vdf missing key -> None")
     ok("228980" in discovery._STEAM_SKIP_ID, "steam redistributables skipped")
+    ic, fit = discovery.resolve_icon_for("steam://rungameid/99999999")
+    ok(ic is None and fit == "contain", "resolve_icon_for: missing steam art -> None/contain")
+    ok(discovery.resolve_icon_for("")[0] is None, "resolve_icon_for: empty path -> None")
 
 
 def test_ui_build():

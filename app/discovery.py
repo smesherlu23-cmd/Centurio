@@ -69,9 +69,10 @@ def _dedupe(apps: list[dict]) -> list[dict]:
         key = path.lower()
         if key not in seen:
             seen[key] = {"name": name, "path": path, "icon": a.get("icon"),
-                         "source": a.get("source", "")}
+                         "icon_fit": a.get("icon_fit", "contain"), "source": a.get("source", "")}
         elif not seen[key].get("icon") and a.get("icon"):
             seen[key]["icon"] = a.get("icon")
+            seen[key]["icon_fit"] = a.get("icon_fit", "contain")
     return sorted(seen.values(), key=lambda x: x["name"].lower())
 
 
@@ -181,7 +182,8 @@ def _discover_windows(icon_cache: str | None) -> list[dict]:
         name, path = x.get("name"), x.get("path")
         if not name or not path or _is_windows_system(name, path):
             continue
-        apps.append({"name": name, "path": path, "icon": x.get("icon"), "source": "windows"})
+        apps.append({"name": name, "path": path, "icon": x.get("icon"),
+                     "icon_fit": "contain", "source": "windows"})
     return apps
 
 
@@ -290,7 +292,8 @@ def _parse_desktop(path: str) -> dict | None:
         resolved = tryexec if os.path.isabs(tryexec) else shutil.which(tryexec)
     if not resolved or not os.path.exists(resolved):
         return None
-    return {"name": name, "path": resolved, "icon": _resolve_linux_icon(icon), "source": "desktop"}
+    return {"name": name, "path": resolved, "icon": _resolve_linux_icon(icon),
+            "icon_fit": "contain", "source": "desktop"}
 
 
 # ================= macOS =================
@@ -306,7 +309,8 @@ def _discover_macos(icon_cache: str | None) -> list[dict]:
             if entry.endswith(".app"):
                 p = os.path.join(d, entry)
                 apps.append({"name": entry[:-4], "path": p,
-                             "icon": _macos_icon(p, icon_cache), "source": "app"})
+                             "icon": _macos_icon(p, icon_cache), "icon_fit": "contain",
+                             "source": "app"})
     return apps
 
 
@@ -372,13 +376,31 @@ def _vdf_val(text: str, key: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _steam_icon(root: str, appid: str) -> str | None:
+def _steam_icon(root: str, appid: str) -> tuple[str | None, str]:
+    """Return (image_path, fit) for a Steam game. Handles both the old flat
+    librarycache naming and the newer per-appid subfolder layout."""
     cache = os.path.join(root, "appcache", "librarycache")
-    for suffix in (f"{appid}_icon.jpg", f"{appid}_header.jpg", f"{appid}_library_600x900.jpg"):
+    # Flat layout: a small square icon reads best centered (contain).
+    icon = os.path.join(cache, f"{appid}_icon.jpg")
+    if os.path.exists(icon):
+        return icon, "contain"
+    # Flat layout: cover-style art fills the whole tile.
+    for suffix in (f"{appid}_library_600x900.jpg", f"{appid}_header.jpg",
+                   f"{appid}_capsule_616x353.jpg", f"{appid}_capsule_231x87.jpg",
+                   f"{appid}_library_hero.jpg", f"{appid}_logo.png"):
         p = os.path.join(cache, suffix)
         if os.path.exists(p):
-            return p
-    return None
+            return p, "cover"
+    # Newer layout: appcache/librarycache/<appid>/<hash>.(jpg|png)
+    sub = os.path.join(cache, str(appid))
+    if os.path.isdir(sub):
+        imgs = glob.glob(os.path.join(sub, "*.jpg")) + glob.glob(os.path.join(sub, "*.png"))
+        imgs = [p for p in imgs if os.path.isfile(p)]
+        if imgs:
+            best = max(imgs, key=lambda p: os.path.getsize(p))
+            fit = "contain" if "icon" in os.path.basename(best).lower() else "cover"
+            return best, fit
+    return None, "contain"
 
 
 def _steam_games(icon_cache: str | None) -> list[dict]:
@@ -399,8 +421,9 @@ def _steam_games(icon_cache: str | None) -> list[dict]:
                 if any(s in name.lower() for s in _STEAM_SKIP_NAME):
                     continue
                 seen.add(appid)
+                icon, fit = _steam_icon(root, appid)
                 games.append({"name": name, "path": f"steam://rungameid/{appid}",
-                              "icon": _steam_icon(root, appid), "source": "steam"})
+                              "icon": icon, "icon_fit": fit, "source": "steam"})
     return games
 
 
@@ -439,7 +462,8 @@ def _epic_games(icon_cache: str | None) -> list[dict]:
             full = os.path.join(loc, exe)
             if os.path.exists(full):
                 icon = _win_extract_one(full, icon_cache)
-        games.append({"name": name, "path": path, "icon": icon, "source": "epic"})
+        games.append({"name": name, "path": path, "icon": icon,
+                      "icon_fit": "contain", "source": "epic"})
     return games
 
 
@@ -456,3 +480,38 @@ def extract_icon(path: str, icon_cache: str | None) -> str | None:
     except Exception:
         return None
     return None
+
+
+def resolve_icon_for(path: str, icon_cache: str | None = None) -> tuple[str | None, str]:
+    """(icon, fit) for an already-stored app path (Steam URL or a file)."""
+    if not path:
+        return None, "contain"
+    m = re.match(r"steam://rungameid/(\d+)", path)
+    if m:
+        appid = m.group(1)
+        for root in _steam_roots():
+            icon, fit = _steam_icon(root, appid)
+            if icon:
+                return icon, fit
+        return None, "contain"
+    try:
+        if os.name == "nt" and path.lower().endswith(".exe") and os.path.exists(path):
+            return _win_extract_one(path, icon_cache), "contain"
+        if sys.platform == "darwin" and path.endswith(".app"):
+            return _macos_icon(path, icon_cache), "contain"
+    except Exception:
+        pass
+    return None, "contain"
+
+
+def backfill_icons(store, icon_cache: str | None = None) -> bool:
+    """Fill in icons for apps added before icon support / before art was cached."""
+    changed = False
+    for app in list(store.state().get("apps", [])):
+        if app.get("icon"):
+            continue
+        icon, fit = resolve_icon_for(app.get("path"), icon_cache)
+        if icon:
+            store.update_app(app["id"], {"icon": icon, "icon_fit": fit})
+            changed = True
+    return changed

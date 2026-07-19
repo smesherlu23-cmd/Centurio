@@ -125,12 +125,29 @@ def main(page: ft.Page):
 
     ui.mount()
 
+    # Backfill icons for apps added before icons existed (e.g. Steam games whose
+    # art wasn't found yet). Runs off the UI thread; repaints when done.
+    def _backfill():
+        try:
+            from app import discovery
+            cache = str(Path(app_paths_dir(store)))
+            if discovery.backfill_icons(store, cache):
+                ui.refresh()
+        except Exception:
+            pass
+    import threading
+    threading.Thread(target=_backfill, daemon=True).start()
+
     # Apply persisted settings + start tray on desktop.
     if not is_web:
         autostart.set_autostart(store.state()["settings"].get("autostart", False))
         tray.start()
         if "--hidden" in sys.argv:
             _hide_window(page)
+
+
+def app_paths_dir(store):
+    return Path(store.path).parent / "icons"
 
 
 def _show_window(page):
