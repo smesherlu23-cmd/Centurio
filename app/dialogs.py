@@ -54,12 +54,14 @@ def open_add_picker(app_ui):
     manual file picker remains available for anything not in the list.
     """
     import threading
+    from pathlib import Path
 
-    from .discovery import discover_apps
+    from .discovery import discover_apps, extract_icon
 
     page = app_ui.page
     store = app_ui.store
     cats = app_ui.categories()
+    icon_cache = str(Path(store.path).parent / "icons")
 
     # Category is chosen explicitly by the user (not inferred from the current view).
     ui_state = {"category_id": cats[0]["id"] if cats else "work", "query": "", "apps": None}
@@ -80,7 +82,8 @@ def open_add_picker(app_ui):
         path = a.get("path") or ""
         if path.lower() in existing_paths:
             return
-        store.add_app({"name": a["name"], "path": path, "category_id": ui_state["category_id"]})
+        store.add_app({"name": a["name"], "path": path, "icon": a.get("icon"),
+                       "category_id": ui_state["category_id"]})
         existing_paths.add(path.lower())
         app_ui._on_library_changed()
         app_ui._toast(f"Добавлено: {a['name']}")
@@ -88,13 +91,7 @@ def open_add_picker(app_ui):
 
     def make_row(a):
         added = (a.get("path") or "").lower() in existing_paths
-        hue = hue_from_string(a["name"])
-        c1, c2 = C.chip_colors(hue)
-        icon = ft.Container(
-            T(initials(a["name"]), size=15, weight=ft.FontWeight.BOLD, color=C.glyph_color(hue)),
-            width=34, height=34, border_radius=9, alignment=ft.alignment.center,
-            gradient=ft.LinearGradient(begin=ft.alignment.top_left, end=ft.alignment.bottom_right,
-                                       colors=[c1, c2]))
+        icon = app_ui._chip_visual(a, 34, 15, 9)
         trailing = ft.Icon(ft.Icons.CHECK_CIRCLE if added else ft.Icons.ADD_CIRCLE_OUTLINE,
                            size=20, color=C.GREEN if added else C.MUTED)
         row = ft.Container(
@@ -138,7 +135,7 @@ def open_add_picker(app_ui):
     search.on_change = on_query
 
     def load():
-        found = discover_apps()
+        found = discover_apps(icon_cache)
         ui_state["apps"] = found
         status.value = (f"Найдено приложений: {len(found)}" if found
                         else "Ничего не нашлось автоматически — используйте «Указать файл вручную».")
@@ -154,7 +151,9 @@ def open_add_picker(app_ui):
         path = f.path or f.name
         base = (f.name or "").rsplit(".", 1)[0].replace("-", " ").replace("_", " ").strip()
         name = (base[:1].upper() + base[1:]) if base else "Приложение"
-        store.add_app({"name": name, "path": path, "category_id": ui_state["category_id"]})
+        icon = extract_icon(path, icon_cache) if path else None
+        store.add_app({"name": name, "path": path, "icon": icon,
+                       "category_id": ui_state["category_id"]})
         existing_paths.add((path or "").lower())
         app_ui._on_library_changed()
         app_ui._toast(f"Добавлено: {name}")

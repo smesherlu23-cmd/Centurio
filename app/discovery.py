@@ -1,20 +1,22 @@
-"""Discover applications already installed on the system.
+"""Discover applications (and games) already installed on the system.
 
-Instead of hunting for a raw .exe across the disk, Centurio enumerates the
-places the OS already lists installed apps:
+Sources:
+  * Windows — Start Menu shortcuts, Programs & Features (Uninstall) and
+    registered App Paths; real .exe icons are extracted to a PNG cache.
+  * Linux   — .desktop entries (icon resolved from the icon theme / pixmaps).
+  * macOS   — .app bundles (.icns converted to PNG via `sips`).
+  * Games   — Steam (installed appmanifest_*.acf, launched via steam://…) and,
+    on Windows, Epic Games (launcher manifests).
 
-  * Windows — Start Menu shortcuts (.lnk), resolved to their target .exe.
-  * Linux   — .desktop entries in the standard application directories.
-  * macOS   — .app bundles in the Applications folders.
-
-`discover_apps()` returns a de-duplicated, alphabetically sorted list of
-{"name", "path", "source"} dicts. It never raises — on any error it returns
-whatever it found (possibly an empty list), so the UI can fall back to a
-manual file picker.
+`discover_apps(icon_cache)` returns a de-duplicated, sorted list of
+{"name", "path", "icon", "source"} dicts. `icon` is an absolute image path or
+None. Nothing here raises — on error it returns whatever was found.
 """
 from __future__ import annotations
 
 import glob
+import hashlib
+import json
 import os
 import re
 import shlex
@@ -26,17 +28,34 @@ _JUNK_TOKENS = ("uninstall", "удал", "readme", "read me", "help", "доку�
                 "documentation", "release notes", "website", "на сайт", "лиценз",
                 "license", "manual", "руководств", "support", "поддержк")
 
+_WIN_NAME_JUNK = ("node.js", "command prompt", "командная строка", "stack builder",
+                  "recovery drive", "диск восстановлен", "verifier", "debugger",
+                  "redistributable", "runtime", "hotfix", "update for", "sdk ",
+                  "web platform", "webview")
 
-def discover_apps() -> list[dict]:
+
+def discover_apps(icon_cache: str | None = None) -> list[dict]:
+    if icon_cache:
+        try:
+            os.makedirs(icon_cache, exist_ok=True)
+        except OSError:
+            icon_cache = None
+    apps: list[dict] = []
     try:
         if os.name == "nt":
-            apps = _discover_windows()
+            apps += _discover_windows(icon_cache)
         elif sys.platform == "darwin":
-            apps = _discover_macos()
+            apps += _discover_macos(icon_cache)
         else:
-            apps = _discover_linux()
+            apps += _discover_linux(icon_cache)
     except Exception:
-        return []
+        pass
+    # Games (cross-platform Steam, Windows Epic).
+    for fn in (_steam_games, _epic_games):
+        try:
+            apps += fn(icon_cache)
+        except Exception:
+            pass
     return _dedupe(apps)
 
 
@@ -49,7 +68,10 @@ def _dedupe(apps: list[dict]) -> list[dict]:
             continue
         key = path.lower()
         if key not in seen:
-            seen[key] = {"name": name, "path": path, "source": a.get("source", "")}
+            seen[key] = {"name": name, "path": path, "icon": a.get("icon"),
+                         "source": a.get("source", "")}
+        elif not seen[key].get("icon") and a.get("icon"):
+            seen[key]["icon"] = a.get("icon")
     return sorted(seen.values(), key=lambda x: x["name"].lower())
 
 
@@ -58,20 +80,9 @@ def _looks_like_junk(name: str) -> bool:
     return any(tok in n for tok in _JUNK_TOKENS)
 
 
-# System / runtime executables that live outside the Windows dir but are not
-# things a user launches from a hot-panel.
-_WIN_NAME_JUNK = ("node.js", "command prompt", "командная строка", "stack builder",
-                  "recovery drive", "диск восстановлен", "verifier", "debugger",
-                  "redistributable", "runtime", "hotfix", "update for", "sdk ",
-                  "web platform", "webview")
-
-
 def _is_windows_system(name: str, path: str) -> bool:
     """True for OS/system executables the user shouldn't need to launch."""
     p = (path or "").lower().replace("/", "\\")
-    # Anything under the Windows directory: System32, SysWOW64, WinSxS, Installer…
-    # This catches charmap, control (Administrative Tools), appverif, dfrgui,
-    # RecoveryDrive, the various *PowerShell*, @Bios (Windows\Installer\…) etc.
     if "\\windows\\" in f"\\{p}" or p.startswith(os.environ.get("SystemRoot", "c:\\windows").lower()):
         return True
     n = (name or "").lower()
@@ -80,17 +91,30 @@ def _is_windows_system(name: str, path: str) -> bool:
     return False
 
 
-# ---------------- Windows ----------------
-# PowerShell gathers installed apps from three sources so the list is
-# comprehensive (Start Menu shortcuts, Programs & Features / Uninstall, and
-# registered App Paths), then Python filters and de-duplicates them.
-_WIN_PS = r"""
+def _md5(text: str) -> str:
+    return hashlib.md5(text.lower().encode("utf-8")).hexdigest()
+
+
+# ================= Windows =================
+_WIN_PS = r'''
 $ErrorActionPreference='SilentlyContinue'
+$cache=__CACHE__
 $sh=New-Object -ComObject WScript.Shell
 $out=New-Object System.Collections.ArrayList
-function Add-App($n,$p){ if($n -and $p){ [void]$out.Add([PSCustomObject]@{name="$n";path="$p"}) } }
+Add-Type -AssemblyName System.Drawing
+try {
+Add-Type @"
+using System;using System.Runtime.InteropServices;using System.Drawing;
+public class CentIcon {
+ [DllImport("user32.dll")] public static extern int PrivateExtractIcons(string p,int i,int cx,int cy,IntPtr[] h,int[] id,int n,int f);
+ [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
+ public static Bitmap Get(string p,int s){ IntPtr[] h=new IntPtr[1]; int[] id=new int[1]; int r=PrivateExtractIcons(p,0,s,s,h,id,1,0); if(r>0 && h[0]!=IntPtr.Zero){ Icon ic=Icon.FromHandle(h[0]); Bitmap b=new Bitmap(ic.ToBitmap()); DestroyIcon(h[0]); return b; } return null; } }
+"@ -ReferencedAssemblies System.Drawing.dll
+} catch {}
+function Md5($s){ $m=[System.Security.Cryptography.MD5]::Create(); (($m.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($s.ToLower())))|ForEach-Object{$_.ToString('x2')}) -join '' }
+function Save-Icon($exe){ if(-not $cache){ return $null }; $f=Join-Path $cache ((Md5 $exe)+'.png'); if(Test-Path -LiteralPath $f){ return $f }; try{ $b=[CentIcon]::Get($exe,96); if($b){ $b.Save($f,[System.Drawing.Imaging.ImageFormat]::Png); $b.Dispose(); return $f } }catch{}; return $null }
+function Add-App($n,$p){ if(-not $n -or -not $p){ return }; if($p.ToLower() -like '*\windows\*'){ return }; $ic=Save-Icon $p; [void]$out.Add([PSCustomObject]@{name="$n";path="$p";icon=$ic}) }
 
-# 1) Start Menu shortcuts -> target .exe
 $menus=@(__DIRS__)
 foreach($d in $menus){
   Get-ChildItem -LiteralPath $d -Recurse -Filter *.lnk 2>$null | ForEach-Object {
@@ -98,56 +122,50 @@ foreach($d in $menus){
     if($p -and $p.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $p)){ Add-App $_.BaseName $p }
   }
 }
-
-# 2) Programs & Features (Uninstall) -> DisplayName + main exe from DisplayIcon
-$uks=@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
-       'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
-       'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall')
+$uks=@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall')
 foreach($k in $uks){
   Get-ChildItem -LiteralPath $k 2>$null | ForEach-Object {
     $pr=Get-ItemProperty -LiteralPath $_.PSPath 2>$null
     if(-not $pr.DisplayName){ return }
     if($pr.SystemComponent -eq 1){ return }
     $icon=$pr.DisplayIcon
-    if($icon){
-      $exe=($icon -split ',')[0].Trim('"')
-      if($exe -and $exe.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $exe)){ Add-App $pr.DisplayName $exe }
-    }
+    if($icon){ $exe=($icon -split ',')[0].Trim('"'); if($exe -and $exe.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $exe)){ Add-App $pr.DisplayName $exe } }
   }
 }
-
-# 3) Registered App Paths -> default value is the exe
-$aps=@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths',
-       'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths')
+$aps=@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths')
 foreach($k in $aps){
   Get-ChildItem -LiteralPath $k 2>$null | ForEach-Object {
-    $p=(Get-Item -LiteralPath $_.PSPath).GetValue('')
-    if($p){ $p=$p.Trim('"') }
-    if($p -and $p.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $p)){
-      Add-App ([System.IO.Path]::GetFileNameWithoutExtension($p)) $p
-    }
+    $p=(Get-Item -LiteralPath $_.PSPath).GetValue(''); if($p){ $p=$p.Trim('"') }
+    if($p -and $p.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $p)){ Add-App ([System.IO.Path]::GetFileNameWithoutExtension($p)) $p }
   }
 }
 $out | ConvertTo-Json -Compress
-"""
+'''
 
 
-def _discover_windows() -> list[dict]:
-    import json
+def _run_powershell(script: str, timeout: int = 60):
+    return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, text=True, timeout=timeout,
+                          creationflags=0x08000000)  # CREATE_NO_WINDOW
 
+
+def _ps_literal(value: str | None) -> str:
+    if not value:
+        return "$null"
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _discover_windows(icon_cache: str | None) -> list[dict]:
     prog_data = os.environ.get("ProgramData", r"C:\ProgramData")
     appdata = os.environ.get("APPDATA", "")
     dirs = [os.path.join(prog_data, r"Microsoft\Windows\Start Menu\Programs")]
     if appdata:
         dirs.append(os.path.join(appdata, r"Microsoft\Windows\Start Menu\Programs"))
     dirs = [d for d in dirs if os.path.isdir(d)]
+    dir_list = ",".join(_ps_literal(d) for d in dirs)
 
-    dir_list = ",".join("'" + d.replace("'", "''") + "'" for d in dirs)
-    ps = _WIN_PS.replace("__DIRS__", dir_list)
-
-    res = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                         capture_output=True, text=True, timeout=40,
-                         creationflags=0x08000000)  # CREATE_NO_WINDOW
+    ps = _WIN_PS.replace("__DIRS__", dir_list).replace("__CACHE__", _ps_literal(icon_cache))
+    res = _run_powershell(ps, timeout=90)
     out = (res.stdout or "").strip()
     if not out:
         return []
@@ -163,11 +181,24 @@ def _discover_windows() -> list[dict]:
         name, path = x.get("name"), x.get("path")
         if not name or not path or _is_windows_system(name, path):
             continue
-        apps.append({"name": name, "path": path, "source": "windows"})
+        apps.append({"name": name, "path": path, "icon": x.get("icon"), "source": "windows"})
     return apps
 
 
-# ---------------- Linux ----------------
+def _win_extract_one(path: str, icon_cache: str) -> str | None:
+    ps = _WIN_PS.replace("__DIRS__", "").replace("__CACHE__", _ps_literal(icon_cache))
+    # Reuse the helpers, but only extract for one file.
+    ps = ps.split("$menus=@")[0] + f"$r=Save-Icon {_ps_literal(path)}; if($r){{ Write-Output $r }}"
+    try:
+        res = _run_powershell(ps, timeout=25)
+    except Exception:
+        return None
+    out = (res.stdout or "").strip().splitlines()
+    out = out[-1].strip() if out else ""
+    return out if out and os.path.exists(out) else None
+
+
+# ================= Linux =================
 _LINUX_DIRS = [
     "/usr/share/applications",
     "/usr/local/share/applications",
@@ -175,9 +206,10 @@ _LINUX_DIRS = [
     "/var/lib/flatpak/exports/share/applications",
     "/var/lib/snapd/desktop/applications",
 ]
+_ICON_THEME_SIZES = ("512x512", "256x256", "128x128", "96x96", "64x64", "48x48")
 
 
-def _discover_linux() -> list[dict]:
+def _discover_linux(icon_cache: str | None) -> list[dict]:
     apps = []
     for d in _LINUX_DIRS:
         if not os.path.isdir(d):
@@ -189,8 +221,28 @@ def _discover_linux() -> list[dict]:
     return apps
 
 
+def _resolve_linux_icon(icon_field: str | None) -> str | None:
+    if not icon_field:
+        return None
+    if os.path.isabs(icon_field):
+        return icon_field if os.path.exists(icon_field) and icon_field.lower().endswith(
+            (".png", ".jpg", ".jpeg", ".svg")) else None
+    name = icon_field
+    png = os.path.join("/usr/share/pixmaps", name + ".png")
+    if os.path.exists(png):
+        return png
+    for size in _ICON_THEME_SIZES:
+        p = f"/usr/share/icons/hicolor/{size}/apps/{name}.png"
+        if os.path.exists(p):
+            return p
+    svg = f"/usr/share/icons/hicolor/scalable/apps/{name}.svg"
+    if os.path.exists(svg):
+        return svg
+    return None
+
+
 def _parse_desktop(path: str) -> dict | None:
-    name = exec_cmd = typ = tryexec = None
+    name = exec_cmd = typ = tryexec = icon = None
     nodisplay = hidden = False
     try:
         with open(path, encoding="utf-8", errors="ignore") as fh:
@@ -208,6 +260,8 @@ def _parse_desktop(path: str) -> dict | None:
                     name = val.strip()
                 elif key == "Exec" and exec_cmd is None:
                     exec_cmd = val.strip()
+                elif key == "Icon" and icon is None:
+                    icon = val.strip()
                 elif key == "TryExec":
                     tryexec = val.strip()
                 elif key == "Type":
@@ -223,7 +277,6 @@ def _parse_desktop(path: str) -> dict | None:
         return None
     if not name or not exec_cmd:
         return None
-
     cmd = re.sub(r"%[fFuUdDnNickvm]", "", exec_cmd).strip()
     try:
         tokens = shlex.split(cmd)
@@ -237,11 +290,11 @@ def _parse_desktop(path: str) -> dict | None:
         resolved = tryexec if os.path.isabs(tryexec) else shutil.which(tryexec)
     if not resolved or not os.path.exists(resolved):
         return None
-    return {"name": name, "path": resolved, "source": "desktop"}
+    return {"name": name, "path": resolved, "icon": _resolve_linux_icon(icon), "source": "desktop"}
 
 
-# ---------------- macOS ----------------
-def _discover_macos() -> list[dict]:
+# ================= macOS =================
+def _discover_macos(icon_cache: str | None) -> list[dict]:
     dirs = ["/Applications", os.path.expanduser("~/Applications"),
             "/System/Applications", "/System/Applications/Utilities",
             "/Applications/Utilities"]
@@ -251,6 +304,155 @@ def _discover_macos() -> list[dict]:
             continue
         for entry in os.listdir(d):
             if entry.endswith(".app"):
-                apps.append({"name": entry[:-4], "path": os.path.join(d, entry),
-                             "source": "app"})
+                p = os.path.join(d, entry)
+                apps.append({"name": entry[:-4], "path": p,
+                             "icon": _macos_icon(p, icon_cache), "source": "app"})
     return apps
+
+
+def _macos_icon(app_path: str, icon_cache: str | None) -> str | None:
+    if not icon_cache:
+        return None
+    res_dir = os.path.join(app_path, "Contents", "Resources")
+    icns = glob.glob(os.path.join(res_dir, "*.icns"))
+    if not icns:
+        return None
+    out = os.path.join(icon_cache, _md5(app_path) + ".png")
+    if os.path.exists(out):
+        return out
+    try:
+        subprocess.run(["sips", "-s", "format", "png", "-Z", "128", icns[0], "--out", out],
+                       capture_output=True, timeout=10)
+    except Exception:
+        return None
+    return out if os.path.exists(out) else None
+
+
+# ================= Steam =================
+_STEAM_SKIP_ID = {"228980"}  # Steamworks Common Redistributables
+_STEAM_SKIP_NAME = ("steamworks common", "proton", "steam linux runtime", "steamvr media")
+
+
+def _steam_roots() -> list[str]:
+    roots = []
+    if os.name == "nt":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
+                p, _ = winreg.QueryValueEx(k, "SteamPath")
+                if p:
+                    roots.append(p)
+        except Exception:
+            pass
+        roots += [r"C:\Program Files (x86)\Steam", r"C:\Program Files\Steam"]
+    elif sys.platform == "darwin":
+        roots.append(os.path.expanduser("~/Library/Application Support/Steam"))
+    else:
+        roots += [os.path.expanduser("~/.steam/steam"),
+                  os.path.expanduser("~/.local/share/Steam"),
+                  os.path.expanduser("~/.steam/root")]
+    return [r for r in dict.fromkeys(roots) if r and os.path.isdir(r)]
+
+
+def _steam_libraries(root: str) -> list[str]:
+    libs = [root]
+    vdf = os.path.join(root, "steamapps", "libraryfolders.vdf")
+    try:
+        with open(vdf, encoding="utf-8", errors="ignore") as fh:
+            text = fh.read()
+        for m in re.finditer(r'"path"\s*"([^"]+)"', text):
+            libs.append(m.group(1).replace("\\\\", "\\"))
+    except OSError:
+        pass
+    return list(dict.fromkeys(libs))
+
+
+def _vdf_val(text: str, key: str) -> str | None:
+    m = re.search(r'"%s"\s*"([^"]*)"' % re.escape(key), text, re.IGNORECASE)
+    return m.group(1) if m else None
+
+
+def _steam_icon(root: str, appid: str) -> str | None:
+    cache = os.path.join(root, "appcache", "librarycache")
+    for suffix in (f"{appid}_icon.jpg", f"{appid}_header.jpg", f"{appid}_library_600x900.jpg"):
+        p = os.path.join(cache, suffix)
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _steam_games(icon_cache: str | None) -> list[dict]:
+    games = []
+    seen = set()
+    for root in _steam_roots():
+        for lib in _steam_libraries(root):
+            for acf in glob.glob(os.path.join(lib, "steamapps", "appmanifest_*.acf")):
+                try:
+                    with open(acf, encoding="utf-8", errors="ignore") as fh:
+                        text = fh.read()
+                except OSError:
+                    continue
+                appid = _vdf_val(text, "appid")
+                name = _vdf_val(text, "name")
+                if not appid or not name or appid in _STEAM_SKIP_ID or appid in seen:
+                    continue
+                if any(s in name.lower() for s in _STEAM_SKIP_NAME):
+                    continue
+                seen.add(appid)
+                games.append({"name": name, "path": f"steam://rungameid/{appid}",
+                              "icon": _steam_icon(root, appid), "source": "steam"})
+    return games
+
+
+# ================= Epic Games (Windows) =================
+def _epic_games(icon_cache: str | None) -> list[dict]:
+    if os.name != "nt":
+        return []
+    mani = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"),
+                        "Epic", "EpicGamesLauncher", "Data", "Manifests")
+    if not os.path.isdir(mani):
+        return []
+    games = []
+    for f in glob.glob(os.path.join(mani, "*.item")):
+        try:
+            with open(f, encoding="utf-8", errors="ignore") as fh:
+                d = json.load(fh)
+        except Exception:
+            continue
+        name = d.get("DisplayName")
+        if not name or d.get("bIsIncompleteInstall"):
+            continue
+        app_name = d.get("MainGameAppName") or d.get("AppName")
+        path = None
+        if app_name:
+            path = (f"com.epicgames.launcher://apps/{app_name}"
+                    "?action=launch&silent=true")
+        else:
+            loc, exe = d.get("InstallLocation"), d.get("LaunchExecutable")
+            if loc and exe:
+                path = os.path.join(loc, exe)
+        if not path:
+            continue
+        icon = None
+        loc, exe = d.get("InstallLocation"), d.get("LaunchExecutable")
+        if icon_cache and loc and exe:
+            full = os.path.join(loc, exe)
+            if os.path.exists(full):
+                icon = _win_extract_one(full, icon_cache)
+        games.append({"name": name, "path": path, "icon": icon, "source": "epic"})
+    return games
+
+
+# ================= single-icon extraction (manual add) =================
+def extract_icon(path: str, icon_cache: str | None) -> str | None:
+    """Best-effort icon for a manually chosen file."""
+    if not path or not icon_cache:
+        return None
+    try:
+        if os.name == "nt" and path.lower().endswith(".exe") and os.path.exists(path):
+            return _win_extract_one(path, icon_cache)
+        if sys.platform == "darwin" and path.endswith(".app"):
+            return _macos_icon(path, icon_cache)
+    except Exception:
+        return None
+    return None

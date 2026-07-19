@@ -6,12 +6,43 @@ Works on desktop (frameless window + tray) and, for preview, in web mode.
 """
 from __future__ import annotations
 
+import base64
+import os
 import time
 
 import flet as ft
 
 from . import colors as C
 from .store import Store, hue_from_string
+
+_RASTER_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+_IMG_B64_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def img_b64(path) -> str | None:
+    """Base64 of a raster image (cached by mtime); None for missing/SVG/etc."""
+    if not path or not str(path).lower().endswith(_RASTER_EXT):
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    cached = _IMG_B64_CACHE.get(path)
+    if cached and cached[0] == st.st_mtime:
+        return cached[1]
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    b = base64.b64encode(data).decode("ascii")
+    _IMG_B64_CACHE[path] = (st.st_mtime, b)
+    return b
+
+
+def app_hue(a) -> int:
+    h = a.get("hue")
+    return h if isinstance(h, int) else hue_from_string(a.get("name") or "")
 
 CATEGORY_ICON_CHOICES = ["work", "brush", "sports_esports", "code", "folder",
                          "movie", "music_note", "chat", "terminal", "rocket_launch"]
@@ -162,6 +193,39 @@ class CenturioUI:
         container.bgcolor = normal
         container.on_hover = on_hover
         return container
+
+    def _chip_visual(self, a, size, letter_size, radius):
+        """Square icon for small contexts: real app icon if available, else a
+        coloured letter chip. Works for stored apps and discovered dicts."""
+        b64 = img_b64(a.get("icon"))
+        if b64:
+            return ft.Container(
+                ft.Image(src_base64=b64, width=size, height=size, fit=ft.ImageFit.CONTAIN),
+                width=size, height=size, border_radius=radius, bgcolor="#17171b",
+                alignment=ft.alignment.center, clip_behavior=ft.ClipBehavior.HARD_EDGE)
+        hue = app_hue(a)
+        c1, c2 = C.chip_colors(hue)
+        return ft.Container(
+            T(initials(a["name"]), size=letter_size, weight=ft.FontWeight.BOLD, color=C.glyph_color(hue)),
+            width=size, height=size, border_radius=radius, alignment=ft.alignment.center,
+            gradient=ft.LinearGradient(begin=ft.alignment.top_left, end=ft.alignment.bottom_right,
+                                       colors=[c1, c2]))
+
+    def _cover_content(self, a, cover_h):
+        """Tile cover: (gradient, glyph). Real icon on a neutral cover, or the
+        big letter on a coloured gradient."""
+        b64 = img_b64(a.get("icon"))
+        if b64:
+            px = min(int(cover_h * 0.62), 88)
+            grad = ft.LinearGradient(begin=ft.alignment.top_left, end=ft.alignment.bottom_right,
+                                     colors=["#1e1e24", "#131317"])
+            return grad, ft.Image(src_base64=b64, width=px, height=px, fit=ft.ImageFit.CONTAIN)
+        hue = app_hue(a)
+        c1, c2 = C.cover_colors(hue)
+        grad = ft.LinearGradient(begin=ft.alignment.top_left, end=ft.alignment.bottom_right,
+                                 colors=[c1, c2])
+        gsize = 34 if self.state()["settings"].get("tile_size") == "compact" else 46
+        return grad, T(initials(a["name"]), size=gsize, weight=ft.FontWeight.BOLD, color=C.glyph_color(hue))
 
     # ---------- titlebar ----------
     def _win_btn(self, icon_name, tooltip, handler, danger=False):
@@ -332,14 +396,9 @@ class CenturioUI:
         )
 
     def _recent_row(self, a):
-        c1, c2 = C.chip_colors(a["hue"])
         row = ft.Container(
             ft.Row([
-                ft.Container(T(initials(a["name"]), size=13, weight=ft.FontWeight.BOLD,
-                                     color=C.glyph_color(a["hue"])),
-                             width=30, height=30, border_radius=9, alignment=ft.alignment.center,
-                             gradient=ft.LinearGradient(begin=ft.alignment.top_left,
-                                                        end=ft.alignment.bottom_right, colors=[c1, c2])),
+                self._chip_visual(a, 30, 13, 9),
                 ft.Column([
                     T(a["name"], size=12.5, color=C.TEXT, weight=ft.FontWeight.W_500,
                             max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
@@ -561,16 +620,11 @@ class CenturioUI:
     def _quick_row(self, quick):
         cards = []
         for i, q in enumerate(quick):
-            c1, c2 = C.chip_colors(q["hue"])
             key = q.get("hotkey") or f"Ctrl+{i + 1}"
             card = ft.Container(
                 ft.Stack([
                     ft.Column([
-                        ft.Container(T(initials(q["name"]), size=20, weight=ft.FontWeight.BOLD,
-                                             color=C.glyph_color(q["hue"])),
-                                     width=44, height=44, border_radius=12, alignment=ft.alignment.center,
-                                     gradient=ft.LinearGradient(begin=ft.alignment.top_left,
-                                                                end=ft.alignment.bottom_right, colors=[c1, c2])),
+                        self._chip_visual(q, 44, 20, 12),
                         ft.Container(height=7),
                         T(q["name"], size=13, weight=ft.FontWeight.W_600, color=C.TEXT,
                                 max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
@@ -617,15 +671,10 @@ class CenturioUI:
         compact = self.state()["settings"].get("tile_size") == "compact"
         width = 152 if compact else 196
         cover_h = round(width * 0.62)
-        glyph_size = 34 if compact else 46
-        c1, c2 = C.cover_colors(a["hue"])
         running = a["id"] in self.running
+        grad, glyph = self._cover_content(a, cover_h)
         cover_children = [
-            ft.Container(T(initials(a["name"]), size=glyph_size, weight=ft.FontWeight.BOLD,
-                                 color=C.glyph_color(a["hue"])),
-                         expand=True, alignment=ft.alignment.center,
-                         gradient=ft.LinearGradient(begin=ft.alignment.top_left,
-                                                    end=ft.alignment.bottom_right, colors=[c1, c2])),
+            ft.Container(glyph, expand=True, alignment=ft.alignment.center, gradient=grad),
         ]
         if running:
             cover_children.append(ft.Container(
@@ -675,14 +724,9 @@ class CenturioUI:
     def _list(self, apps):
         rows = []
         for a in apps:
-            c1, c2 = C.chip_colors(a["hue"])
             running = a["id"] in self.running
             controls = [
-                ft.Container(T(initials(a["name"]), size=17, weight=ft.FontWeight.BOLD,
-                                     color=C.glyph_color(a["hue"])),
-                             width=40, height=40, border_radius=10, alignment=ft.alignment.center,
-                             gradient=ft.LinearGradient(begin=ft.alignment.top_left,
-                                                        end=ft.alignment.bottom_right, colors=[c1, c2])),
+                self._chip_visual(a, 40, 17, 10),
                 ft.Column([T(a["name"], size=13.5, weight=ft.FontWeight.W_600, color=C.TEXT),
                            T(a.get("sub") or self._path_tail(a.get("path")), size=11.5, color=C.MUTED_2)],
                           spacing=1, expand=True, tight=True),

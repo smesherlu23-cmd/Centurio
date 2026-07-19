@@ -8,6 +8,7 @@ process exits and calls the on_change callback.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -60,6 +61,16 @@ class Launcher:
         path = app.get("path") or ""
         if not path:
             return {"ok": False, "error": "Не указан путь к приложению"}
+
+        # URL-scheme launch (e.g. Steam games via steam://rungameid/<id>,
+        # Epic via com.epicgames.launcher://…). Hand off to the OS, no tracking.
+        if re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", path):
+            try:
+                self._open_with_os(path)
+                return {"ok": True, "running": False}
+            except OSError as exc:
+                return {"ok": False, "error": str(exc)}
+
         if not os.path.exists(path):
             return {"ok": False, "error": f"Файл не найден: {path}"}
 

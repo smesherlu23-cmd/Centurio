@@ -96,6 +96,10 @@ def test_discovery():
        "system filter drops runtimes like Node.js")
     ok(discovery._is_windows_system("Google Chrome", r"C:\Program Files\Google\Chrome\chrome.exe") is False,
        "system filter keeps real apps")
+    # Steam / VDF parsing
+    ok(discovery._vdf_val('"appid" "570" "name" "Dota 2"', "appid") == "570", "vdf value parsed")
+    ok(discovery._vdf_val("nothing", "name") is None, "vdf missing key -> None")
+    ok("228980" in discovery._STEAM_SKIP_ID, "steam redistributables skipped")
 
 
 def test_ui_build():
@@ -131,7 +135,14 @@ def test_ui_build():
         def update(self):
             pass
 
-    with tempfile.TemporaryDirectory() as d:
+    import shutil
+    import time as _time
+
+    # mkdtemp (not the context manager): the Add picker spawns a background
+    # discovery thread that may create an icon-cache dir; ignore_errors cleanup
+    # avoids a race with rmtree.
+    d = tempfile.mkdtemp()
+    try:
         store = Store(os.path.join(d, "data.json"))
         _sample(store)
         page = FakePage()
@@ -160,6 +171,17 @@ def test_ui_build():
         store.data["apps"] = []
         ui.filter = "all"
         ok(isinstance(ui._build_content(), list), "empty library builds")
+
+        # Image helper: base64 for a real PNG, None otherwise.
+        from app.ui import img_b64, app_hue
+        icon_png = iconify.generate_icon(os.path.join(d, "t.png"), 32)
+        ok(isinstance(img_b64(str(icon_png)), str), "img_b64 encodes a PNG")
+        ok(img_b64("/no/such.png") is None, "img_b64 missing -> None")
+        ok(img_b64("/x/foo.svg") is None, "img_b64 skips non-raster")
+        ok(0 <= app_hue({"name": "X"}) < 360, "app_hue falls back to name hue")
+    finally:
+        _time.sleep(0.4)  # let the discovery thread settle
+        shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":
