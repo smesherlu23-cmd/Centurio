@@ -19,25 +19,84 @@ _EXE_EXTS_WIN = {".exe", ".bat", ".cmd", ".com"}
 
 class Launcher:
     def __init__(self, on_change=None):
-        self._procs: dict[str, subprocess.Popen] = {}
+        self._procs: dict[str, subprocess.Popen] = {}   # apps we spawned
+        self._name_ids: set[str] = set()                # detected via psutil
+        self._exe_index: dict[str, set[str]] = {}       # exe basename -> app ids
+        self._last_emit: frozenset[str] = frozenset()
         self._lock = threading.Lock()
+        self._monitor_stop = None
         self.on_change = on_change
 
     # ---- state ----
     def running_ids(self) -> list[str]:
         with self._lock:
-            return list(self._procs.keys())
+            return list(set(self._procs.keys()) | self._name_ids)
 
     def is_running(self, app_id: str) -> bool:
         with self._lock:
-            return app_id in self._procs
+            return app_id in self._procs or app_id in self._name_ids
 
     def _emit(self):
+        ids = frozenset(self.running_ids())
+        if ids == self._last_emit:
+            return
+        self._last_emit = ids
         if self.on_change:
             try:
-                self.on_change(self.running_ids())
+                self.on_change(list(ids))
             except Exception:
                 pass
+
+    # ---- process-name monitoring (optional, needs psutil) ----
+    def set_apps(self, apps):
+        """Index apps by executable basename so already-running apps (launched
+        anywhere, not just by us) show as 'running'."""
+        index: dict[str, set[str]] = {}
+        for a in apps:
+            path = a.get("path") or ""
+            if not path or "://" in path:   # skip URL launchers (Steam etc.)
+                continue
+            base = os.path.basename(path).lower()
+            if base.endswith((".exe", ".bat", ".cmd", ".com")) or os.name != "nt":
+                index.setdefault(base, set()).add(a["id"])
+        with self._lock:
+            self._exe_index = index
+
+    def start_monitor(self, interval: float = 4.0):
+        try:
+            import psutil  # noqa: F401
+        except Exception:
+            return False
+        if self._monitor_stop:
+            return True
+        self._monitor_stop = threading.Event()
+
+        def loop():
+            import psutil
+            while not self._monitor_stop.is_set():
+                try:
+                    names = set()
+                    for p in psutil.process_iter(["name"]):
+                        n = p.info.get("name")
+                        if n:
+                            names.add(n.lower())
+                    with self._lock:
+                        matched = set()
+                        for base, ids in self._exe_index.items():
+                            if base in names:
+                                matched |= ids
+                        self._name_ids = matched
+                    self._emit()
+                except Exception:
+                    pass
+                self._monitor_stop.wait(interval)
+        threading.Thread(target=loop, daemon=True).start()
+        return True
+
+    def stop_monitor(self):
+        if self._monitor_stop:
+            self._monitor_stop.set()
+            self._monitor_stop = None
 
     # ---- helpers ----
     def _is_executable(self, path: str) -> bool:

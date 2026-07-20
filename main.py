@@ -15,6 +15,7 @@ from pathlib import Path
 import flet as ft
 
 from app import autostart
+from app.hotkeys import HotkeyManager, quick_bindings
 from app.iconify import ensure_icons
 from app.launcher import Launcher
 from app.store import Store
@@ -91,15 +92,26 @@ def main(page: ft.Page):
         if key == "autostart":
             autostart.set_autostart(bool(value))
 
+    # Global hotkeys (best-effort). Trigger runs the app on the hotkey thread.
+    hotkeys = HotkeyManager(on_trigger=lambda app_id: ui_holder["ui"]._launch(app_id))
+
+    def refresh_runtime():
+        """Re-index processes and re-register hotkeys after the library changes."""
+        apps = store.state()["apps"]
+        launcher.set_apps(apps)
+        if not is_web:
+            hotkeys.register(quick_bindings(apps))
+
     controllers = {
         "minimize": minimize, "toggle_maximize": toggle_maximize, "close": close,
         "hide_to_tray": hide_to_tray, "on_setting": on_setting,
+        "on_library_changed": refresh_runtime,
     }
 
     ui = CenturioUI(page, store, launcher, controllers)
     ui_holder["ui"] = ui
 
-    # Launcher running-state changes repaint the UI (from the watcher thread).
+    # Launcher running-state changes repaint the UI (from the watcher/monitor thread).
     launcher.on_change = lambda ids: ui.set_running(ids)
 
     # Keyboard shortcuts (in-app).
@@ -137,6 +149,10 @@ def main(page: ft.Page):
             pass
     import threading
     threading.Thread(target=_backfill, daemon=True).start()
+
+    # Index running processes + register global hotkeys, then keep them live.
+    refresh_runtime()
+    launcher.start_monitor()
 
     # Apply persisted settings + start tray on desktop.
     if not is_web:

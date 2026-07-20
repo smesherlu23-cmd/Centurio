@@ -648,7 +648,7 @@ class CenturioUI:
                 on_click=lambda e, i2=q["id"]: self._launch(i2),
             )
             self._hoverable(card, C.PANEL, C.PANEL_2)
-            cards.append(card)
+            cards.append(ft.GestureDetector(card, on_secondary_tap=lambda e, ap=q: self._open_context_menu(ap)))
         head = ft.Container(
             ft.Row([T("Быстрый запуск", size=15, weight=ft.FontWeight.BOLD, color=C.TEXT),
                     T("закреплено · горячие клавиши", size=11.5, color=C.MUTED_2,
@@ -723,7 +723,7 @@ class CenturioUI:
             tile.update()
         tile.on_hover = on_hover
         return ft.GestureDetector(tile, on_tap=lambda e, i=a["id"]: self._launch(i),
-                                  on_secondary_tap=lambda e, ap=a: self._open_app_dialog(ap),
+                                  on_secondary_tap=lambda e, ap=a: self._open_context_menu(ap),
                                   mouse_cursor=ft.MouseCursor.CLICK)
 
     def _list(self, apps):
@@ -744,15 +744,15 @@ class CenturioUI:
                         color=C.STAR if a.get("favorite") else C.MUTED),
                 width=30, height=30, border_radius=9, alignment=ft.alignment.center,
                 on_click=lambda e, i=a["id"]: self._toggle_fav(i)))
-            controls.append(ft.Container(ft.Icon(ft.Icons.EDIT_OUTLINED, size=14, color=C.MUTED),
+            controls.append(ft.Container(ft.Icon(ft.Icons.MORE_HORIZ, size=16, color=C.MUTED),
                                          width=30, height=30, border_radius=9, alignment=ft.alignment.center,
-                                         on_click=lambda e, ap=a: self._open_app_dialog(ap)))
+                                         on_click=lambda e, ap=a: self._open_context_menu(ap)))
             row = ft.Container(ft.Row(controls, spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                                padding=ft.padding.symmetric(10, 14), border_radius=11,
                                border=ft.border.all(1, C.LINE), bgcolor=C.PANEL,
                                on_click=lambda e, i=a["id"]: self._launch(i))
             self._hoverable(row, C.PANEL, C.PANEL_2)
-            rows.append(row)
+            rows.append(ft.GestureDetector(row, on_secondary_tap=lambda e, ap=a: self._open_context_menu(ap)))
         return ft.Container(ft.Column(rows, spacing=6), padding=ft.padding.only(0, 0, 0, 10))
 
     def _empty(self, title, text, btn_label, on_click):
@@ -897,6 +897,10 @@ class CenturioUI:
     def _open_app_dialog(self, existing=None):
         from .dialogs import open_app_dialog
         open_app_dialog(self, existing)
+
+    def _open_context_menu(self, app):
+        from .dialogs import open_context_menu
+        open_context_menu(self, app)
 
     def _open_categories(self, focus_id=None):
         from .dialogs import open_categories_dialog

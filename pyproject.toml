@@ -1,0 +1,26 @@
+[project]
+name = "centurio"
+version = "1.2.0"
+description = "Centurio — персональная, всегда доступная из трея горячая панель приложений."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "flet==0.28.3",
+    "pystray>=0.19.5",
+    "Pillow>=10.0.0",
+    "pynput>=1.7.6",
+    "psutil>=5.9.0",
+]
+
+# Configuration for `flet build <target>` (Windows / macOS / Linux).
+# See docs/BUILD.md for the full build + installer recipe.
+[tool.flet]
+org = "com.centurio"
+product = "Centurio"
+company = "Centurio"
+copyright = "Copyright (c) 2026 Centurio"
+build_version = "1.2.0"
+build_number = 1
+
+[tool.flet.app]
+path = "."

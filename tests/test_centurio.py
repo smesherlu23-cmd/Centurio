@@ -105,6 +105,30 @@ def test_discovery():
     ok(discovery.resolve_icon_for("")[0] is None, "resolve_icon_for: empty path -> None")
 
 
+def test_hotkeys():
+    from app.hotkeys import to_pynput, quick_bindings
+    ok(to_pynput("Ctrl+Shift+1") == "<ctrl>+<shift>+1", "hotkey -> pynput format")
+    ok(to_pynput("Alt+G") == "<alt>+g", "hotkey letter")
+    ok(to_pynput("F5") == "<f5>", "hotkey F-key")
+    apps = [{"id": "a", "quick": True, "hotkey": None},
+            {"id": "b", "quick": True, "hotkey": "Ctrl+Shift+X"},
+            {"id": "c", "quick": True, "hotkey": None}]
+    binds = dict((aid, acc) for acc, aid in quick_bindings(apps))
+    ok(binds["b"] == "Ctrl+Shift+X", "explicit hotkey kept")
+    ok(binds["a"] == "Ctrl+1" and binds["c"] == "Ctrl+2", "auto Ctrl+N assigned")
+
+
+def test_launcher_index():
+    from app.launcher import Launcher
+    lch = Launcher()
+    lch.set_apps([{"id": "1", "path": "C:/x/chrome.exe"},
+                  {"id": "2", "path": "steam://rungameid/730"},
+                  {"id": "3", "path": "/usr/bin/vim"}])
+    keys = set(lch._exe_index)
+    ok("chrome.exe" in keys and "vim" in keys, "exe index built")
+    ok(all("steam" not in k for k in keys), "URL launchers excluded from index")
+
+
 def test_ui_build():
     try:
         from unittest.mock import MagicMock
@@ -170,6 +194,10 @@ def test_ui_build():
         ok(True, "categories dialog opens")
         dialogs.open_settings_dialog(ui)
         ok(True, "settings dialog opens")
+        dialogs.open_context_menu(ui, store.state()["apps"][0])
+        ok(True, "context menu opens")
+        dialogs.confirm(ui, "T", "M", "OK", lambda: None)
+        ok(True, "confirm dialog opens")
 
         store.data["apps"] = []
         ui.filter = "all"
@@ -192,6 +220,8 @@ if __name__ == "__main__":
     test_colors()
     test_icon()
     test_discovery()
+    test_hotkeys()
+    test_launcher_index()
     test_ui_build()
     print(f"\n{_passed} passed, {_failed} failed")
     sys.exit(1 if _failed else 0)

@@ -106,6 +106,7 @@ class Store:
             "icon_fit": app.get("icon_fit") or "contain",
             "favorite": bool(app.get("favorite")),
             "quick": bool(app.get("quick")),
+            "hotkey": app.get("hotkey") or None,
             "last_launched": 0,
             "launch_count": 0,
             "added_at": int(time.time() * 1000),
@@ -121,7 +122,7 @@ class Store:
         app = self.get_app(app_id)
         if not app:
             return None
-        for key in ("name", "path", "args", "sub", "category_id", "hue", "icon", "icon_fit", "favorite", "quick"):
+        for key in ("name", "path", "args", "sub", "category_id", "hue", "icon", "icon_fit", "favorite", "quick", "hotkey"):
             if key in patch:
                 app[key] = patch[key]
         self._persist()

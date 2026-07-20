@@ -38,6 +38,100 @@ def _primary_btn(label, on_click):
                         on_click=lambda e: on_click(), alignment=ft.alignment.center)
 
 
+def confirm(app_ui, title, message, confirm_label, on_confirm, danger=True):
+    """A small confirmation dialog (used before destructive actions)."""
+    page = app_ui.page
+
+    def do():
+        page.close(dialog)
+        on_confirm()
+
+    confirm_btn = ft.Container(
+        T(confirm_label, size=13, weight=ft.FontWeight.W_600, color="#fff" if danger else C.BG_1),
+        height=40, padding=ft.padding.symmetric(0, 18),
+        bgcolor=C.DANGER if danger else "#f5f5f7", border_radius=9,
+        on_click=lambda e: do(), alignment=ft.alignment.center)
+    dialog = ft.AlertDialog(
+        modal=True, bgcolor=C.PANEL,
+        title=T(title, size=17, weight=ft.FontWeight.BOLD, color=C.TEXT),
+        content=ft.Container(T(message, size=13, color=C.MUTED), width=380),
+        actions=[ft.Row([ft.Container(expand=True),
+                         _outline_btn("Отмена", None, lambda: page.close(dialog)),
+                         confirm_btn])],
+        shape=ft.RoundedRectangleBorder(radius=16))
+    page.open(dialog)
+
+
+def _menu_item(icon, label, on_click, danger=False):
+    color = "#e88" if danger else C.TEXT
+    row = ft.Container(
+        ft.Row([ft.Icon(icon, size=17, color="#e88" if danger else C.MUTED),
+                T(label, size=13.5, color=color, weight=ft.FontWeight.W_500)],
+               spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=ft.padding.symmetric(10, 12), border_radius=9,
+        on_click=lambda e: on_click())
+    return row
+
+
+def open_context_menu(app_ui, app):
+    """Right-click menu for an app tile/row."""
+    page = app_ui.page
+    store = app_ui.store
+    fav = app.get("favorite")
+    quick = app.get("quick")
+
+    def close_then(fn):
+        def h():
+            page.close(dialog)
+            fn()
+        return h
+
+    def do_delete():
+        confirm(app_ui, "Удалить приложение?",
+                f"«{app['name']}» будет удалено из Centurio. Само приложение на диске не тронется.",
+                "Удалить", lambda: (_remove(app_ui, app["id"])))
+
+    items = [
+        _menu_item(ft.Icons.PLAY_ARROW, "Открыть", close_then(lambda: app_ui._launch(app["id"]))),
+        _menu_item(ft.Icons.STAR if fav else ft.Icons.STAR_BORDER,
+                   "Убрать из избранного" if fav else "В избранное",
+                   close_then(lambda: app_ui._toggle_fav(app["id"]))),
+        _menu_item(ft.Icons.BOLT, "Убрать из быстрого запуска" if quick else "В быстрый запуск",
+                   close_then(lambda: _toggle_quick(app_ui, app["id"]))),
+        _menu_item(ft.Icons.FOLDER_OPEN, "Показать в папке",
+                   close_then(lambda: app_ui._show_in_folder(app["id"]))),
+        _menu_item(ft.Icons.EDIT_OUTLINED, "Изменить",
+                   close_then(lambda: _open_detail_dialog(app_ui, store.get_app(app["id"]) or app))),
+        ft.Divider(height=1, color=C.LINE_2),
+        _menu_item(ft.Icons.DELETE_OUTLINE, "Удалить", close_then(do_delete), danger=True),
+    ]
+    for it in items:
+        if isinstance(it, ft.Container):
+            app_ui._hoverable(it, None, C.PANEL_2)
+
+    dialog = ft.AlertDialog(
+        modal=True, bgcolor=C.PANEL,
+        title=ft.Row([app_ui._chip_visual(app, 30, 13, 8),
+                      T(app["name"], size=15, weight=ft.FontWeight.BOLD, color=C.TEXT,
+                        max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)], spacing=11),
+        content=ft.Container(ft.Column(items, spacing=2, tight=True), width=300),
+        shape=ft.RoundedRectangleBorder(radius=16))
+    page.open(dialog)
+
+
+def _remove(app_ui, app_id):
+    app_ui.store.remove_app(app_id)
+    app_ui._on_library_changed()
+    app_ui._toast("Удалено")
+
+
+def _toggle_quick(app_ui, app_id):
+    a = app_ui.store.get_app(app_id)
+    if a:
+        app_ui.store.update_app(app_id, {"quick": not a.get("quick")})
+    app_ui._on_library_changed()
+
+
 def open_app_dialog(app_ui, existing=None):
     """Route: adding uses the installed-apps picker; editing uses the detail form."""
     if existing is None:
@@ -226,6 +320,7 @@ def _open_detail_dialog(app_ui, existing):
     name_in = _text_input(draft["name"], "Например, Visual Studio Code")
     path_in = _text_input(draft["path"], "Путь к файлу приложения")
     sub_in = _text_input(draft["sub"], "Короткое описание (необязательно)")
+    hotkey_in = _text_input(draft.get("hotkey") or "", "Например, Ctrl+Shift+G")
 
     def on_name(e):
         draft["name"] = e.control.value
@@ -239,6 +334,10 @@ def _open_detail_dialog(app_ui, existing):
     def on_sub(e):
         draft["sub"] = e.control.value
     sub_in.on_change = on_sub
+
+    def on_hotkey(e):
+        draft["hotkey"] = e.control.value.strip() or None
+    hotkey_in.on_change = on_hotkey
 
     cat_dd = ft.Dropdown(
         value=draft["category_id"], bgcolor=C.BG_1, border_color=C.LINE,
@@ -306,8 +405,8 @@ def _open_detail_dialog(app_ui, existing):
             app_ui._toast("Выберите файл приложения", error=True)
             return
         if is_edit:
-            store.update_app(existing["id"], {k: draft[k] for k in
-                             ("name", "path", "sub", "category_id", "hue", "favorite", "quick")})
+            store.update_app(existing["id"], {k: draft.get(k) for k in
+                             ("name", "path", "sub", "category_id", "hue", "favorite", "quick", "hotkey")})
         else:
             store.add_app(draft)
         page.close(dialog)
@@ -315,10 +414,14 @@ def _open_detail_dialog(app_ui, existing):
         app_ui._toast("Сохранено" if is_edit else "Приложение добавлено")
 
     def remove():
-        store.remove_app(existing["id"])
-        page.close(dialog)
-        app_ui._on_library_changed()
-        app_ui._toast("Удалено")
+        def do():
+            store.remove_app(existing["id"])
+            page.close(dialog)
+            app_ui._on_library_changed()
+            app_ui._toast("Удалено")
+        confirm(app_ui, "Удалить приложение?",
+                f"«{existing['name']}» будет удалено из Centurio. Само приложение на диске не тронется.",
+                "Удалить", do)
 
     body = ft.Column([
         T("Закрепите программу для быстрого запуска из Centurio.", size=12.5, color=C.MUTED_2),
@@ -331,8 +434,9 @@ def _open_detail_dialog(app_ui, existing):
         ft.Container(height=6), _field_label("Категория"), cat_dd,
         ft.Container(height=6), _field_label("Цвет плитки"),
         ft.Row([preview, hue_slider], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ft.Container(height=6), _field_label("Горячая клавиша (глобальная)"), hotkey_in,
         check_row("В избранное", "Показывать в разделе «Избранное»", fav_sw),
-        check_row("Быстрый запуск", "Закрепить сверху и назначить горячую клавишу", quick_sw),
+        check_row("Быстрый запуск", "Закрепить сверху; без своей клавиши — Ctrl+1…9", quick_sw),
     ], spacing=6, tight=True, scroll=ft.ScrollMode.AUTO, width=460)
 
     actions = []
@@ -384,9 +488,16 @@ def open_categories_dialog(app_ui):
             page.update()
 
     def remove_cat(cid):
-        store.remove_category(cid)
-        rebuild()
-        app_ui._on_library_changed()
+        cat = next((c for c in app_ui.categories() if c["id"] == cid), None)
+        cnt = sum(1 for a in store.state()["apps"] if a.get("category_id") == cid)
+        msg = (f"Категория «{cat['name'] if cat else ''}» будет удалена."
+               + (f" {cnt} приложений будут перенесены в первую категорию." if cnt else ""))
+
+        def do():
+            store.remove_category(cid)
+            rebuild()
+            app_ui._on_library_changed()
+        confirm(app_ui, "Удалить категорию?", msg, "Удалить", do)
 
     new_field = _text_input("", "Название категории")
 
