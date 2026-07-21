@@ -233,7 +233,8 @@ _LINUX_DIRS = [
     "/var/lib/flatpak/exports/share/applications",
     "/var/lib/snapd/desktop/applications",
 ]
-_ICON_THEME_SIZES = ("512x512", "256x256", "128x128", "96x96", "64x64", "48x48")
+_ICON_THEME_SIZES = ("512x512", "256x256", "128x128", "96x96", "64x64", "48x48", "32x32")
+_PIXMAP_DIRS = ("/usr/share/pixmaps", "/usr/local/share/pixmaps")
 
 
 def _discover_linux(icon_cache: str | None) -> list[dict]:
@@ -248,6 +249,24 @@ def _discover_linux(icon_cache: str | None) -> list[dict]:
     return apps
 
 
+def _icon_theme_dirs() -> list[str]:
+    """Base dirs that may contain an `icons/<theme>/…` tree, per the XDG icon
+    theme spec, plus Flatpak/Snap export locations (not always covered by
+    $XDG_DATA_DIRS) so icons for sandboxed apps resolve too."""
+    home = os.path.expanduser("~")
+    dirs = [os.path.join(home, ".local/share"), os.path.join(home, ".icons")]
+    xdg = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+    dirs += [d for d in xdg.split(":") if d]
+    dirs += ["/var/lib/flatpak/exports/share",
+             os.path.join(home, ".local/share/flatpak/exports/share"),
+             "/var/lib/snapd/desktop"]
+    out = []
+    for d in dirs:
+        if d and os.path.isdir(d) and d not in out:
+            out.append(d)
+    return out
+
+
 def _resolve_linux_icon(icon_field: str | None) -> str | None:
     if not icon_field:
         return None
@@ -255,16 +274,25 @@ def _resolve_linux_icon(icon_field: str | None) -> str | None:
         return icon_field if os.path.exists(icon_field) and icon_field.lower().endswith(
             (".png", ".jpg", ".jpeg", ".svg")) else None
     name = icon_field
-    png = os.path.join("/usr/share/pixmaps", name + ".png")
-    if os.path.exists(png):
-        return png
-    for size in _ICON_THEME_SIZES:
-        p = f"/usr/share/icons/hicolor/{size}/apps/{name}.png"
+    for d in _PIXMAP_DIRS:
+        p = os.path.join(d, name + ".png")
         if os.path.exists(p):
             return p
-    svg = f"/usr/share/icons/hicolor/scalable/apps/{name}.svg"
-    if os.path.exists(svg):
-        return svg
+    bases = _icon_theme_dirs()
+    # Themed raster icons, biggest first, searched across every icon theme
+    # (not just hicolor) since many distros ship Papirus/Breeze/Adwaita etc.
+    for size in _ICON_THEME_SIZES:
+        for base in bases:
+            for p in glob.glob(os.path.join(base, "icons", "*", size, "apps", name + ".png")):
+                return p
+            for p in glob.glob(os.path.join(base, "icons", "*", "*", size, "apps", name + ".png")):
+                return p
+    # Scalable SVG fallback, any theme.
+    for base in bases:
+        for p in glob.glob(os.path.join(base, "icons", "*", "scalable", "apps", name + ".svg")):
+            return p
+        for p in glob.glob(os.path.join(base, "icons", "*", "*", "scalable", "apps", name + ".svg")):
+            return p
     return None
 
 

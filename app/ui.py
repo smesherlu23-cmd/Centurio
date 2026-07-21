@@ -17,6 +17,7 @@ from .store import Store, hue_from_string
 
 _RASTER_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 _IMG_B64_CACHE: dict[str, tuple[float, str]] = {}
+_SVG_CACHE: dict[str, tuple[float, str]] = {}
 
 
 def img_b64(path) -> str | None:
@@ -38,6 +39,38 @@ def img_b64(path) -> str | None:
     b = base64.b64encode(data).decode("ascii")
     _IMG_B64_CACHE[path] = (st.st_mtime, b)
     return b
+
+
+def _svg_markup(path) -> str | None:
+    """Raw <svg>…</svg> markup (cached by mtime); None for missing/non-SVG."""
+    if not path or not str(path).lower().endswith(".svg"):
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    cached = _SVG_CACHE.get(path)
+    if cached and cached[0] == st.st_mtime:
+        return cached[1]
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    _SVG_CACHE[path] = (st.st_mtime, text)
+    return text
+
+
+def icon_image(path, **kw) -> "ft.Image | None":
+    """An ft.Image for a raster (base64) or SVG (raw markup) icon path;
+    None when the path is missing or of an unsupported type."""
+    b64 = img_b64(path)
+    if b64:
+        return ft.Image(src_base64=b64, **kw)
+    svg = _svg_markup(path)
+    if svg:
+        return ft.Image(src=svg, **kw)
+    return None
 
 
 def app_hue(a) -> int:
@@ -197,12 +230,11 @@ class CenturioUI:
     def _chip_visual(self, a, size, letter_size, radius):
         """Square icon for small contexts: real app icon if available, else a
         coloured letter chip. Works for stored apps and discovered dicts."""
-        b64 = img_b64(a.get("icon"))
-        if b64:
-            fit = ft.ImageFit.COVER if a.get("icon_fit") == "cover" else ft.ImageFit.CONTAIN
+        fit = ft.ImageFit.COVER if a.get("icon_fit") == "cover" else ft.ImageFit.CONTAIN
+        img = icon_image(a.get("icon"), width=size, height=size, fit=fit)
+        if img:
             return ft.Container(
-                ft.Image(src_base64=b64, width=size, height=size, fit=fit),
-                width=size, height=size, border_radius=radius, bgcolor="#17171b",
+                img, width=size, height=size, border_radius=radius, bgcolor="#17171b",
                 alignment=ft.alignment.center, clip_behavior=ft.ClipBehavior.HARD_EDGE)
         hue = app_hue(a)
         c1, c2 = C.chip_colors(hue)
@@ -215,15 +247,16 @@ class CenturioUI:
     def _cover_content(self, a, cover_h):
         """The tile cover base container: game art fills it, an app icon sits
         centred on a neutral cover, and iconless apps show a coloured letter."""
-        b64 = img_b64(a.get("icon"))
-        if b64 and a.get("icon_fit") == "cover":
-            return ft.Container(ft.Image(src_base64=b64, fit=ft.ImageFit.COVER, expand=True),
-                                expand=True, bgcolor="#131317")
-        if b64:
-            px = min(int(cover_h * 0.62), 88)
+        icon_path = a.get("icon")
+        if a.get("icon_fit") == "cover":
+            img = icon_image(icon_path, fit=ft.ImageFit.COVER, expand=True)
+            if img:
+                return ft.Container(img, expand=True, bgcolor="#131317")
+        px = min(int(cover_h * 0.62), 88)
+        img = icon_image(icon_path, width=px, height=px, fit=ft.ImageFit.CONTAIN)
+        if img:
             return ft.Container(
-                ft.Image(src_base64=b64, width=px, height=px, fit=ft.ImageFit.CONTAIN),
-                expand=True, alignment=ft.alignment.center,
+                img, expand=True, alignment=ft.alignment.center,
                 gradient=ft.LinearGradient(begin=ft.alignment.top_left, end=ft.alignment.bottom_right,
                                            colors=["#1e1e24", "#131317"]))
         hue = app_hue(a)
