@@ -436,79 +436,45 @@ def _vdf_val(text: str, key: str) -> str | None:
     return m.group(1) if m else None
 
 
-_COVER_ASPECT = 1 / 0.62  # tile width : cover height (see ui.py's _tile: cover_h = width * 0.62)
-_COVER_TOLERANCE = 0.15  # only crop-to-fill when aspect is within 15% of the tile's
-
-# Known pixel dimensions for Steam's standard flat-layout filenames, so the fit
-# (crop vs letterbox) can be decided without opening each file.
-_STEAM_FLAT_ART = (
-    ("_capsule_616x353.jpg", 616 / 353),
-    ("_header.jpg", 460 / 215),
-    ("_library_hero.jpg", 3840 / 1240),
-    ("_capsule_231x87.jpg", 231 / 87),
-    ("_library_600x900.jpg", 600 / 900),
-    ("_logo.png", None),
+# Steam art filenames in the order we want them for a landscape tile that is
+# filled and cropped ("cover"): least-cropped landscape art first, the portrait
+# grid cover next (cropped to its middle band), very-wide hero last. Each is
+# looked up both flat ("<appid>_<name>") and in the per-appid subfolder
+# ("<appid>/<name>"). Real cover art is always preferred over the tiny icon so a
+# game never falls back to a small logo/square when a proper cover is cached.
+_STEAM_ART_NAMES = (
+    "capsule_616x353.jpg",   # ~1.75:1 — closest to the tile, minimal crop
+    "header.jpg",            # ~2.14:1 — classic store banner
+    "library_600x900.jpg",   # portrait grid cover, cropped to the middle band
+    "library_hero.jpg",      # very wide key art
+    "capsule_231x87.jpg",
 )
-
-
-def _fit_for_aspect(aspect: float | None) -> str:
-    """'cover' (fill + crop) when the art's aspect ratio is close enough to the
-    tile's that cropping only trims a thin margin; 'contain' (letterbox, no
-    crop) otherwise — force-cropping a much wider/taller image to fill the
-    tile chops off a large, often meaningful, chunk of the art (e.g. a
-    widescreen header cropped hard on both sides, or a portrait cover reduced
-    to a sliver of background)."""
-    if aspect is None:
-        return "contain"
-    return "cover" if abs(aspect / _COVER_ASPECT - 1) <= _COVER_TOLERANCE else "contain"
-
-
-def _image_aspect(path: str) -> float | None:
-    try:
-        from PIL import Image
-        with Image.open(path) as im:
-            w, h = im.size
-    except Exception:
-        return None
-    return (w / h) if w and h else None
 
 
 def _steam_icon(root: str, appid: str) -> tuple[str | None, str]:
     """Return (image_path, fit) for a Steam game. Handles both the old flat
     librarycache naming and the newer per-appid subfolder layout.
 
-    Real cover/header art (which fills the whole tile) is always preferred over
-    the tiny 32px `_icon.jpg`; the flat icon is only a last resort, because on a
-    big tile it renders as a small blurry square rather than proper game art.
-
-    Among the real art, landscape-shaped images (header/capsule) are preferred
-    over the portrait `library_600x900` grid cover, and the fit (cover-and-crop
-    vs contain-and-letterbox) is chosen per image so a badly-mismatched aspect
-    ratio doesn't get force-cropped into losing most of the artwork."""
+    Prefers real cover/header art (fit="cover" — fills the tile, cropping the
+    overflow) and only falls back to the tiny 32px icon (fit="contain") when no
+    cover art is cached at all. A `logo.png` (usually a transparent title
+    graphic) is never chosen as the cover — that produced the "tiny logo on
+    black" look for games like Valheim."""
     cache = os.path.join(root, "appcache", "librarycache")
-    # Flat layout: landscape art first — it fills a landscape tile with the
-    # least crop. library_600x900 (portrait) is last.
-    for suffix, aspect in _STEAM_FLAT_ART:
-        p = os.path.join(cache, f"{appid}{suffix}")
-        if os.path.exists(p):
-            return p, _fit_for_aspect(aspect)
-    # Newer layout: appcache/librarycache/<appid>/<hash>.(jpg|png). Prefer the
-    # non-icon art whose aspect ratio best fits the tile; fall back to the
-    # largest file if sizes can't be read.
     sub = os.path.join(cache, str(appid))
+    # Named art, best fit first, flat layout and per-appid subfolder alike.
+    for name in _STEAM_ART_NAMES:
+        for p in (os.path.join(cache, f"{appid}_{name}"), os.path.join(sub, name)):
+            if os.path.exists(p):
+                return p, "cover"
+    # Older subfolder layout uses hashed filenames: take the largest image that
+    # isn't an icon or logo (i.e. real cover art), cropped to fill.
     if os.path.isdir(sub):
         imgs = glob.glob(os.path.join(sub, "*.jpg")) + glob.glob(os.path.join(sub, "*.png"))
-        imgs = [p for p in imgs if os.path.isfile(p)]
-        art = [p for p in imgs if "icon" not in os.path.basename(p).lower()]
+        art = [p for p in imgs if os.path.isfile(p)
+               and not any(k in os.path.basename(p).lower() for k in ("icon", "logo"))]
         if art:
-            scored = [(p, _image_aspect(p)) for p in art]
-            scored = [(p, a) for p, a in scored if a is not None]
-            if scored:
-                best, aspect = min(scored, key=lambda t: abs(t[1] - _COVER_ASPECT))
-                return best, _fit_for_aspect(aspect)
             return max(art, key=lambda p: os.path.getsize(p)), "cover"
-        if imgs:
-            return max(imgs, key=lambda p: os.path.getsize(p)), "contain"
     # Last resort: the small flat square icon, centered on a neutral cover.
     icon = os.path.join(cache, f"{appid}_icon.jpg")
     if os.path.exists(icon):
@@ -621,7 +587,7 @@ def resolve_icon_for(path: str, icon_cache: str | None = None) -> tuple[str | No
 # already stored by an older version (e.g. higher-res .exe extraction, better
 # Steam art selection). backfill_icons(refresh=True) re-resolves once and the
 # caller records the new schema so it doesn't run again.
-ICON_SCHEMA = 2
+ICON_SCHEMA = 3
 
 
 def backfill_icons(store, icon_cache: str | None = None, refresh: bool = False) -> bool:

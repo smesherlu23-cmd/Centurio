@@ -73,8 +73,6 @@ def icon_image(path, **kw) -> "ft.Image | None":
     return None
 
 
-_TILE_ASPECT = 1 / 0.62   # tile cover box aspect (see _tile: cover_h = width * 0.62)
-_ASPECT_TOL = 0.15        # crop-to-fill only when within 15% of the tile aspect
 _MIN_ART_PX = 160         # below this the image is a small icon, not cover art
 _IMG_SIZE_CACHE: dict[str, tuple[float, tuple[int, int] | None]] = {}
 
@@ -286,26 +284,21 @@ class CenturioUI:
                                        colors=[c1, c2]))
 
     def _cover_content(self, a, cover_h):
-        """The tile cover base container. The fit is decided from the *actual*
-        image, not the stored icon_fit (which may be stale):
+        """The tile cover base container. Fit is decided from the *actual* image,
+        not the stored icon_fit (which may be stale):
 
-          * Large launcher art whose aspect ratio is close to the tile fills it
-            (cover, cropping only a thin margin).
-          * Large launcher art with a mismatched aspect is letterboxed across
-            the whole cover (contain + expand) so none of the art is cropped
-            away — a wide header keeps its full width, a portrait cover its
-            full height.
-          * A small icon (a plain app/exe icon, or a tiny Steam _icon.jpg
-            fallback) is shown at its natural small size, centred on a neutral
-            gradient — never upscaled to fill the tile, which would blur it.
+          * Real launcher cover art fills the tile, cropping the overflow so
+            there are no empty bands (a wide header loses a little off each
+            side, a portrait cover shows its middle band).
+          * A small image — a plain app/exe icon, or a tiny Steam _icon.jpg
+            fallback for a game with no cached cover — is shown at its natural
+            small size, centred on a neutral gradient, never upscaled into a
+            blur.
         """
         icon_path = a.get("icon")
         size = _img_size(icon_path)
         if _is_launcher_art(a) and size and max(size) >= _MIN_ART_PX and icon_image(icon_path):
-            aspect = size[0] / size[1]
-            close = abs(aspect / _TILE_ASPECT - 1) <= _ASPECT_TOL
-            fit = ft.ImageFit.COVER if close else ft.ImageFit.CONTAIN
-            return ft.Container(icon_image(icon_path, fit=fit, expand=True),
+            return ft.Container(icon_image(icon_path, fit=ft.ImageFit.COVER, expand=True),
                                 expand=True, bgcolor="#131317")
         px = min(int(cover_h * 0.62), 88)
         img = icon_image(icon_path, width=px, height=px, fit=ft.ImageFit.CONTAIN)
