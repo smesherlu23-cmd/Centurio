@@ -69,7 +69,8 @@ def _dedupe(apps: list[dict]) -> list[dict]:
         key = path.lower()
         if key not in seen:
             seen[key] = {"name": name, "path": path, "icon": a.get("icon"),
-                         "icon_fit": a.get("icon_fit", "contain"), "source": a.get("source", "")}
+                         "icon_fit": a.get("icon_fit", "contain"), "source": a.get("source", ""),
+                         "sub": a.get("sub", "")}
         elif not seen[key].get("icon") and a.get("icon"):
             seen[key]["icon"] = a.get("icon")
             seen[key]["icon_fit"] = a.get("icon_fit", "contain")
@@ -97,23 +98,43 @@ def _md5(text: str) -> str:
 
 
 # ================= Windows =================
-_WIN_PS = r'''
+# Shared icon-extraction helpers. Uses the built-in ExtractAssociatedIcon
+# (always available on Windows PowerShell 5.1, no custom compilation) and, when
+# it compiles, a P/Invoke path for a larger 96px icon. Either way an icon is
+# produced — the earlier version silently failed when the inline C# didn't
+# compile, so regular apps got no icons.
+_PS_ICON_FUNCS = r'''
 $ErrorActionPreference='SilentlyContinue'
 $cache=__CACHE__
-$sh=New-Object -ComObject WScript.Shell
-$out=New-Object System.Collections.ArrayList
 Add-Type -AssemblyName System.Drawing
+$script:CentBig=$false
 try {
-Add-Type @"
+  Add-Type -ReferencedAssemblies 'System.Drawing' -TypeDefinition @"
 using System;using System.Runtime.InteropServices;using System.Drawing;
 public class CentIcon {
  [DllImport("user32.dll")] public static extern int PrivateExtractIcons(string p,int i,int cx,int cy,IntPtr[] h,int[] id,int n,int f);
  [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
  public static Bitmap Get(string p,int s){ IntPtr[] h=new IntPtr[1]; int[] id=new int[1]; int r=PrivateExtractIcons(p,0,s,s,h,id,1,0); if(r>0 && h[0]!=IntPtr.Zero){ Icon ic=Icon.FromHandle(h[0]); Bitmap b=new Bitmap(ic.ToBitmap()); DestroyIcon(h[0]); return b; } return null; } }
-"@ -ReferencedAssemblies System.Drawing.dll
-} catch {}
+"@
+  $script:CentBig=$true
+} catch { $script:CentBig=$false }
 function Md5($s){ $m=[System.Security.Cryptography.MD5]::Create(); (($m.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($s.ToLower())))|ForEach-Object{$_.ToString('x2')}) -join '' }
-function Save-Icon($exe){ if(-not $cache){ return $null }; $f=Join-Path $cache ((Md5 $exe)+'.png'); if(Test-Path -LiteralPath $f){ return $f }; try{ $b=[CentIcon]::Get($exe,96); if($b){ $b.Save($f,[System.Drawing.Imaging.ImageFormat]::Png); $b.Dispose(); return $f } }catch{}; return $null }
+function Save-Icon($exe){
+  if(-not $cache){ return $null }
+  if(-not (Test-Path -LiteralPath $exe)){ return $null }
+  $f=Join-Path $cache ((Md5 $exe)+'.png')
+  if(Test-Path -LiteralPath $f){ return $f }
+  $bmp=$null
+  if($script:CentBig){ try{ $bmp=[CentIcon]::Get($exe,96) }catch{ $bmp=$null } }
+  if(-not $bmp){ try{ $ic=[System.Drawing.Icon]::ExtractAssociatedIcon($exe); if($ic){ $bmp=$ic.ToBitmap() } }catch{ $bmp=$null } }
+  if($bmp){ try{ $bmp.Save($f,[System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose(); return $f }catch{} }
+  return $null
+}
+'''
+
+_WIN_PS = _PS_ICON_FUNCS + r'''
+$sh=New-Object -ComObject WScript.Shell
+$out=New-Object System.Collections.ArrayList
 function Add-App($n,$p){ if(-not $n -or -not $p){ return }; if($p.ToLower() -like '*\windows\*'){ return }; $ic=Save-Icon $p; [void]$out.Add([PSCustomObject]@{name="$n";path="$p";icon=$ic}) }
 
 $menus=@(__DIRS__)
@@ -141,6 +162,11 @@ foreach($k in $aps){
   }
 }
 $out | ConvertTo-Json -Compress
+'''
+
+_WIN_ICON_ONE_PS = _PS_ICON_FUNCS + r'''
+$r=Save-Icon __EXE__
+if($r){ Write-Output $r }
 '''
 
 
@@ -188,9 +214,8 @@ def _discover_windows(icon_cache: str | None) -> list[dict]:
 
 
 def _win_extract_one(path: str, icon_cache: str) -> str | None:
-    ps = _WIN_PS.replace("__DIRS__", "").replace("__CACHE__", _ps_literal(icon_cache))
-    # Reuse the helpers, but only extract for one file.
-    ps = ps.split("$menus=@")[0] + f"$r=Save-Icon {_ps_literal(path)}; if($r){{ Write-Output $r }}"
+    ps = _WIN_ICON_ONE_PS.replace("__CACHE__", _ps_literal(icon_cache)).replace(
+        "__EXE__", _ps_literal(path))
     try:
         res = _run_powershell(ps, timeout=25)
     except Exception:
@@ -423,7 +448,7 @@ def _steam_games(icon_cache: str | None) -> list[dict]:
                 seen.add(appid)
                 icon, fit = _steam_icon(root, appid)
                 games.append({"name": name, "path": f"steam://rungameid/{appid}",
-                              "icon": icon, "icon_fit": fit, "source": "steam"})
+                              "icon": icon, "icon_fit": fit, "source": "steam", "sub": "Steam"})
     return games
 
 
@@ -463,7 +488,7 @@ def _epic_games(icon_cache: str | None) -> list[dict]:
             if os.path.exists(full):
                 icon = _win_extract_one(full, icon_cache)
         games.append({"name": name, "path": path, "icon": icon,
-                      "icon_fit": "contain", "source": "epic"})
+                      "icon_fit": "contain", "source": "epic", "sub": "Epic Games"})
     return games
 
 
@@ -505,13 +530,23 @@ def resolve_icon_for(path: str, icon_cache: str | None = None) -> tuple[str | No
 
 
 def backfill_icons(store, icon_cache: str | None = None) -> bool:
-    """Fill in icons for apps added before icon support / before art was cached."""
+    """Fill in icons and the "sub" label (e.g. "Steam") for apps added before
+    that metadata existed or before art was cached."""
     changed = False
     for app in list(store.state().get("apps", [])):
-        if app.get("icon"):
-            continue
-        icon, fit = resolve_icon_for(app.get("path"), icon_cache)
-        if icon:
-            store.update_app(app["id"], {"icon": icon, "icon_fit": fit})
+        patch = {}
+        path = app.get("path") or ""
+        if not app.get("icon"):
+            icon, fit = resolve_icon_for(path, icon_cache)
+            if icon:
+                patch["icon"] = icon
+                patch["icon_fit"] = fit
+        if not (app.get("sub") or "").strip():
+            if path.startswith("steam://"):
+                patch["sub"] = "Steam"
+            elif path.startswith("com.epicgames.launcher://"):
+                patch["sub"] = "Epic Games"
+        if patch:
+            store.update_app(app["id"], patch)
             changed = True
     return changed

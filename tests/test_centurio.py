@@ -104,6 +104,49 @@ def test_discovery():
     ok(ic is None and fit == "contain", "resolve_icon_for: missing steam art -> None/contain")
     ok(discovery.resolve_icon_for("")[0] is None, "resolve_icon_for: empty path -> None")
 
+    # Steam/Epic games carry a friendly "sub" label (was showing the raw
+    # appid, e.g. "730", because nothing set it and the UI fell back to the
+    # last path segment).
+    with tempfile.TemporaryDirectory() as d:
+        lib = os.path.join(d, "steamapps")
+        os.makedirs(lib)
+        with open(os.path.join(lib, "appmanifest_730.acf"), "w") as fh:
+            fh.write('"AppState"{ "appid" "730" "name" "Counter-Strike 2" }')
+        discovery._steam_roots = lambda: [d]
+        games = discovery._steam_games(None)
+        ok(games and games[0]["sub"] == "Steam", "steam games carry sub='Steam'")
+
+    # _dedupe must preserve the "sub" field (it silently dropped it before).
+    deduped = discovery._dedupe([{"name": "CS2", "path": "steam://rungameid/730",
+                                  "sub": "Steam", "source": "steam"}])
+    ok(deduped[0]["sub"] == "Steam", "_dedupe preserves sub field")
+
+    # PowerShell templates: balanced braces / here-strings after substitution
+    # (can't execute PowerShell on this platform, but a structural check
+    # catches template-interpolation mistakes).
+    for name, tmpl, subs in [
+        ("_WIN_PS", discovery._WIN_PS, {"__DIRS__": "'C:\\x'", "__CACHE__": "'C:\\c'"}),
+        ("_WIN_ICON_ONE_PS", discovery._WIN_ICON_ONE_PS, {"__CACHE__": "'C:\\c'", "__EXE__": "'C:\\a.exe'"}),
+    ]:
+        s = tmpl
+        for k, v in subs.items():
+            s = s.replace(k, v)
+        ok(s.count("{") == s.count("}"), f"{name}: braces balanced")
+        ok(s.count('@"') == s.count('"@'), f"{name}: here-strings balanced")
+        remaining = [k for k in ("__DIRS__", "__CACHE__", "__EXE__") if k in s]
+        ok(not remaining, f"{name}: all placeholders substituted")
+
+    # backfill_icons also fills the sub label for entries that already have an
+    # icon (a Steam game with cached cover art but no sub was never touched
+    # by the old icon-only backfill).
+    store2 = Store(os.path.join(tempfile.mkdtemp(), "d.json"))
+    a = store2.add_app({"name": "CS2", "path": "steam://rungameid/730", "icon": "/fake/cover.jpg"})
+    ok(not a.get("sub"), "precondition: no sub yet")
+    discovery._steam_roots = lambda: []  # icon resolution finds nothing; only sub should change
+    changed = discovery.backfill_icons(store2, None)
+    ok(changed and store2.get_app(a["id"])["sub"] == "Steam",
+       "backfill_icons fixes sub even when icon already present")
+
 
 def test_hotkeys():
     from app.hotkeys import to_pynput, quick_bindings
