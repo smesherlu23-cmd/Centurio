@@ -1,20 +1,25 @@
 """Launch external applications and track which of them are running.
 
-Executables are started with subprocess.Popen so their lifetime can be
-watched (drives the "Запущено" indicator). Documents, folders and shortcuts
-are handed off to the OS. A tiny watcher thread notices when a tracked
-process exits and calls the on_change callback.
+Windows only. Executables are started with subprocess.Popen so their lifetime
+can be watched (drives the "Запущено" indicator). Documents, folders, shortcuts
+and URL-scheme launchers (e.g. Steam) are handed off to the shell. A tiny
+watcher thread notices when a tracked process exits and calls the on_change
+callback.
 """
 from __future__ import annotations
 
+import ntpath
 import os
 import re
+import shlex
 import subprocess
-import sys
 import threading
 from pathlib import Path
 
-_EXE_EXTS_WIN = {".exe", ".bat", ".cmd", ".com"}
+from . import log
+
+_EXE_EXTS = {".exe", ".bat", ".cmd", ".com"}
+_DETACHED_PROCESS = 0x00000008
 
 
 class Launcher:
@@ -63,8 +68,8 @@ class Launcher:
             # A real file path also names its own process.
             path = a.get("path") or ""
             if path and "://" not in path:
-                base = os.path.basename(path).lower()
-                if base and (base.endswith((".exe", ".bat", ".cmd", ".com")) or os.name != "nt"):
+                base = ntpath.basename(path).lower()   # Windows-style path split
+                if base.endswith((".exe", ".bat", ".cmd", ".com")):
                     names.add(base)
             for base in names:
                 index.setdefault(base, set()).add(a["id"])
@@ -97,7 +102,7 @@ class Launcher:
                         self._name_ids = matched
                     self._emit()
                 except Exception:
-                    pass
+                    log.exception("process monitor iteration failed")
                 self._monitor_stop.wait(interval)
         threading.Thread(target=loop, daemon=True).start()
         return True
@@ -109,20 +114,40 @@ class Launcher:
 
     # ---- helpers ----
     def _is_executable(self, path: str) -> bool:
-        ext = Path(path).suffix.lower()
-        if os.name == "nt":
-            return ext in _EXE_EXTS_WIN
-        if sys.platform == "darwin":
-            return ext in ("", ".app")
-        return ext in ("", ".sh", ".appimage", ".run") or os.access(path, os.X_OK)
+        return Path(path).suffix.lower() in _EXE_EXTS
 
     def _open_with_os(self, path: str):
-        if os.name == "nt":
-            os.startfile(path)  # type: ignore[attr-defined]
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", path])
-        else:
-            subprocess.Popen(["xdg-open", path])
+        os.startfile(path)  # type: ignore[attr-defined]  # Windows shell open
+
+    def _work_dir(self, app: dict, path: str) -> str:
+        wd = (app.get("working_dir") or "").strip()
+        if wd and os.path.isdir(wd):
+            return wd
+        return str(Path(path).parent)
+
+    @staticmethod
+    def _as_args(args) -> list[str]:
+        """Accept either a list or a raw string of arguments."""
+        if isinstance(args, str):
+            try:
+                return shlex.split(args, posix=False)
+            except ValueError:
+                return args.split()
+        return list(args or [])
+
+    def _run_as_admin(self, path: str, args: list[str], cwd: str) -> dict:
+        """Launch elevated via ShellExecute 'runas' (triggers UAC). No process
+        handle comes back through UAC, so running-state relies on name matching."""
+        try:
+            import ctypes
+            params = " ".join(f'"{a}"' if " " in a else a for a in args)
+            rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", path, params or None, cwd, 1)
+            if int(rc) <= 32:
+                return {"ok": False, "error": f"Не удалось запустить от администратора (код {rc})"}
+            return {"ok": True, "running": False}
+        except Exception as exc:
+            log.exception("run-as-admin failed for %s", path)
+            return {"ok": False, "error": str(exc)}
 
     # ---- launch ----
     def launch(self, app: dict) -> dict:
@@ -143,26 +168,18 @@ class Launcher:
             return {"ok": False, "error": f"Файл не найден: {path}"}
 
         app_id = app["id"]
-        args = app.get("args") or []
+        args = self._as_args(app.get("args"))
+        cwd = self._work_dir(app, path)
 
-        # macOS .app bundles must be opened via `open`.
-        if sys.platform == "darwin" and Path(path).suffix.lower() == ".app":
-            try:
-                subprocess.Popen(["open", "-a", path, *args])
-                return {"ok": True, "running": False}
-            except OSError as exc:
-                return {"ok": False, "error": str(exc)}
+        if app.get("run_as_admin"):
+            return self._run_as_admin(path, args, cwd)
 
         if self._is_executable(path):
             try:
-                kwargs = {"cwd": str(Path(path).parent)}
-                if os.name == "nt":
-                    kwargs["creationflags"] = 0x00000008  # DETACHED_PROCESS
-                else:
-                    kwargs["start_new_session"] = True
-                proc = subprocess.Popen([path, *args], **kwargs)
+                proc = subprocess.Popen([path, *args], cwd=cwd, creationflags=_DETACHED_PROCESS)
             except OSError:
-                # Fall back to the OS opener.
+                # Fall back to the shell opener.
+                log.exception("Popen failed for %s; falling back to shell open", path)
                 try:
                     self._open_with_os(path)
                     return {"ok": True, "running": False}
@@ -197,12 +214,7 @@ class Launcher:
         if not path or not os.path.exists(path):
             return {"ok": False, "error": "Файл не найден"}
         try:
-            if os.name == "nt":
-                subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", "-R", path])
-            else:
-                subprocess.Popen(["xdg-open", str(Path(path).parent)])
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
             return {"ok": True}
         except OSError as exc:
             return {"ok": False, "error": str(exc)}

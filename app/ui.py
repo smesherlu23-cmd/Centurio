@@ -6,181 +6,16 @@ Works on desktop (frameless window + tray) and, for preview, in web mode.
 """
 from __future__ import annotations
 
-import base64
 import os
-import time
 
 import flet as ft
 
 from . import colors as C
-from .store import Store, hue_from_string
-
-_RASTER_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
-_IMG_B64_CACHE: dict[str, tuple[float, str]] = {}
-_SVG_CACHE: dict[str, tuple[float, str]] = {}
-
-
-def img_b64(path) -> str | None:
-    """Base64 of a raster image (cached by mtime); None for missing/SVG/etc."""
-    if not path or not str(path).lower().endswith(_RASTER_EXT):
-        return None
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    cached = _IMG_B64_CACHE.get(path)
-    if cached and cached[0] == st.st_mtime:
-        return cached[1]
-    try:
-        with open(path, "rb") as fh:
-            data = fh.read()
-    except OSError:
-        return None
-    b = base64.b64encode(data).decode("ascii")
-    _IMG_B64_CACHE[path] = (st.st_mtime, b)
-    return b
-
-
-def _svg_markup(path) -> str | None:
-    """Raw <svg>…</svg> markup (cached by mtime); None for missing/non-SVG."""
-    if not path or not str(path).lower().endswith(".svg"):
-        return None
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    cached = _SVG_CACHE.get(path)
-    if cached and cached[0] == st.st_mtime:
-        return cached[1]
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-            text = fh.read()
-    except OSError:
-        return None
-    _SVG_CACHE[path] = (st.st_mtime, text)
-    return text
-
-
-def icon_image(path, **kw) -> "ft.Image | None":
-    """An ft.Image for a raster (base64) or SVG (raw markup) icon path;
-    None when the path is missing or of an unsupported type."""
-    b64 = img_b64(path)
-    if b64:
-        return ft.Image(src_base64=b64, **kw)
-    svg = _svg_markup(path)
-    if svg:
-        return ft.Image(src=svg, **kw)
-    return None
-
-
-_MIN_ART_PX = 160         # below this the image is a small icon, not cover art
-_IMG_SIZE_CACHE: dict[str, tuple[float, tuple[int, int] | None]] = {}
-
-
-def _is_launcher_art(a) -> bool:
-    """True for Steam/Epic entries, whose stored icon is real cover/header art
-    meant to fill a tile — as opposed to a plain app/exe icon."""
-    path = a.get("path") or ""
-    return path.startswith("steam://") or path.startswith("com.epicgames.launcher://")
-
-
-def _img_size(path) -> tuple[int, int] | None:
-    """(width, height) of a raster image (cached by mtime); None if it can't be
-    read or isn't a raster. Used to decide fit from the *actual* image rather
-    than trusting a possibly-stale stored icon_fit."""
-    if not path or not str(path).lower().endswith(_RASTER_EXT):
-        return None
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    cached = _IMG_SIZE_CACHE.get(path)
-    if cached and cached[0] == st.st_mtime:
-        return cached[1]
-    size = None
-    try:
-        from PIL import Image
-        with Image.open(path) as im:
-            w, h = im.size
-        if w and h:
-            size = (w, h)
-    except Exception:
-        size = None
-    _IMG_SIZE_CACHE[path] = (st.st_mtime, size)
-    return size
-
-
-def app_hue(a) -> int:
-    h = a.get("hue")
-    return h if isinstance(h, int) else hue_from_string(a.get("name") or "")
-
-CATEGORY_ICON_CHOICES = ["work", "brush", "sports_esports", "code", "folder",
-                         "movie", "music_note", "chat", "terminal", "rocket_launch"]
-
-_BOLD = {ft.FontWeight.BOLD, ft.FontWeight.W_700, ft.FontWeight.W_800, ft.FontWeight.W_900}
-
-
-def _family_for(weight):
-    """Pick a bundled Inter family for a weight (crisp real weights, not faux)."""
-    if weight in _BOLD:
-        return "Inter Bold"
-    if weight == ft.FontWeight.W_600:
-        return "Inter SemiBold"
-    return "Inter"
-
-
-def T(value="", **kw):
-    """ft.Text that resolves font_family from the requested weight, and maps the
-    'monospace' family to the bundled mono face — so text renders with the
-    intended weight everywhere."""
-    fam = kw.get("font_family")
-    if fam == "monospace":
-        kw["font_family"] = "mono"
-    elif fam is None:
-        kw["font_family"] = _family_for(kw.get("weight"))
-    return ft.Text(value, **kw)
-
-
-def cat_icon(name: str):
-    return getattr(ft.Icons, (name or "folder").upper(), ft.Icons.FOLDER)
-
-
-def initials(name: str) -> str:
-    n = (name or "?").strip()
-    return n[0].upper() if n else "?"
-
-
-def time_ago(ms: int) -> str:
-    if not ms:
-        return ""
-    diff = time.time() * 1000 - ms
-    m = int(diff // 60000)
-    if m < 1:
-        return "только что"
-    if m < 60:
-        return f"{m} {_plural(m, 'минуту', 'минуты', 'минут')} назад"
-    h = m // 60
-    if h < 24:
-        return f"{h} {_plural(h, 'час', 'часа', 'часов')} назад"
-    d = h // 24
-    return f"{d} {_plural(d, 'день', 'дня', 'дней')} назад"
-
-
-def _plural(n, one, few, many):
-    m10, m100 = n % 10, n % 100
-    if m10 == 1 and m100 != 11:
-        return one
-    if 2 <= m10 <= 4 and not (10 <= m100 < 20):
-        return few
-    return many
-
-
-def plu_apps(n):
-    return _plural(n, "приложение", "приложения", "приложений")
-
-
-def plu_cats(n):
-    return _plural(n, "категория", "категории", "категорий")
+from .format import (  # noqa: F401  (re-exported for dialogs/tests)
+    CATEGORY_ICON_CHOICES, T, cat_icon, initials, plu_apps, plu_cats, time_ago)
+from .images import (  # noqa: F401  (re-exported for tests)
+    _img_size, _is_launcher_art, _MIN_ART_PX, app_hue, icon_image, img_b64)
+from .store import Store
 
 
 class CenturioUI:
@@ -191,11 +26,15 @@ class CenturioUI:
         self.controllers = controllers or {}
         self.running: set[str] = set()
 
-        # View state
-        self.filter = "all"
+        # View state — restored from the last session, then persisted on change.
+        s = store.state()["settings"]
+        self.filter = self._valid_filter(s.get("view_filter") or "all")
         self.query = ""
-        self.sort = "alpha"
-        self.mode = "grid"
+        self.sort = s.get("view_sort") if s.get("view_sort") in ("alpha", "recent", "added") else "alpha"
+        self.mode = s.get("view_mode") if s.get("view_mode") in ("grid", "list") else "grid"
+        # Keyboard-navigation cursor (index into the flat list of visible apps).
+        self.selected = -1
+        self._sel_id = None
 
         # Persistent controls
         self.search_field = ft.TextField(
@@ -208,6 +47,20 @@ class CenturioUI:
         self.sidebar_container = ft.Container(width=236, bgcolor=C.BG_2)
         self.content_col = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
         self.status_container = ft.Container()
+
+    def _valid_filter(self, f):
+        """Guard a persisted filter: a category that no longer exists falls
+        back to 'all' so a deleted category doesn't leave a dead view."""
+        if f and f.startswith("category:"):
+            cid = f.split(":", 1)[1]
+            if not any(c["id"] == cid for c in self.store.state()["categories"]):
+                return "all"
+        return f or "all"
+
+    def _persist_view(self):
+        self.store.set_setting("view_filter", self.filter)
+        self.store.set_setting("view_sort", self.sort)
+        self.store.set_setting("view_mode", self.mode)
 
     # ---------- data helpers ----------
     def state(self):
@@ -371,10 +224,17 @@ class CenturioUI:
         )
 
     # ---------- rail ----------
-    def _rail_item(self, icon_name, active, on_click, tooltip):
+    def _cat_glyph(self, cat, size=19):
+        """A category's rail/label glyph: a picked icon, else its first letter,
+        tinted with the category colour (RGB/hex, user-editable)."""
+        color = C.category_color(cat)
+        if cat.get("icon"):
+            return ft.Icon(cat_icon(cat.get("icon")), size=size, color=color)
+        return T(initials(cat.get("name")), size=size - 1, weight=ft.FontWeight.BOLD, color=color)
+
+    def _rail_item(self, glyph, active, on_click, tooltip, fixed_color=None, on_drop_app=None):
         inner = ft.Container(
-            ft.Icon(icon_name, size=19, color=C.TEXT if active else C.MUTED),
-            width=44, height=44, border_radius=14 if active else 22,
+            glyph, width=44, height=44, border_radius=14 if active else 22,
             bgcolor="#1e1e22" if active else C.PANEL_2,
             alignment=ft.alignment.center, on_click=lambda e: on_click(), tooltip=tooltip,
             animate=ft.Animation(140, ft.AnimationCurve.EASE_OUT),
@@ -383,20 +243,37 @@ class CenturioUI:
         def on_hover(e):
             if active:
                 return
-            if e.data == "true":
-                inner.bgcolor = "#1e1e22"
-                inner.border_radius = 14
-                inner.content.color = C.TEXT
-            else:
-                inner.bgcolor = C.PANEL_2
-                inner.border_radius = 22
-                inner.content.color = C.MUTED
+            highlight = e.data == "true"
+            inner.bgcolor = "#1e1e22" if highlight else C.PANEL_2
+            inner.border_radius = 14 if highlight else 22
+            if fixed_color is None:                 # default items tint on hover
+                inner.content.color = C.TEXT if highlight else C.MUTED
             inner.update()
         inner.on_hover = on_hover
 
+        # Categories accept dropped app tiles (drag-and-drop to move category).
+        content = inner
+        if on_drop_app is not None:
+            def _accept(e):
+                src = self.page.get_control(e.src_id)
+                if src is not None and getattr(src, "data", None):
+                    on_drop_app(src.data)
+                inner.border = None
+                inner.update()
+
+            def _will(e):
+                inner.border = ft.border.all(2, self._accent())
+                inner.update()
+
+            def _leave(e):
+                inner.border = None
+                inner.update()
+            content = ft.DragTarget(group="apps", content=inner,
+                                    on_accept=_accept, on_will_accept=_will, on_leave=_leave)
+
         bar = ft.Container(width=3, height=28, border_radius=ft.border_radius.only(0, 3, 0, 3),
                            bgcolor=self._accent()) if active else ft.Container(width=3)
-        return ft.Row([bar, ft.Container(inner, expand=True, alignment=ft.alignment.center)],
+        return ft.Row([bar, ft.Container(content, expand=True, alignment=ft.alignment.center)],
                       spacing=0)
 
     def _is_all_view(self):
@@ -404,14 +281,18 @@ class CenturioUI:
         return not self.filter.startswith("category:")
 
     def _build_rail(self):
+        all_active = self._is_all_view()
         items = [
-            self._rail_item(ft.Icons.GRID_VIEW, self._is_all_view(),
-                            lambda: self._set_filter("all"), "Все приложения"),
+            self._rail_item(ft.Icon(ft.Icons.GRID_VIEW, size=19, color=C.TEXT if all_active else C.MUTED),
+                            all_active, lambda: self._set_filter("all"), "Все приложения"),
         ]
         for cat in self.categories():
+            active = self.filter == f"category:{cat['id']}"
             items.append(self._rail_item(
-                cat_icon(cat.get("icon")), self.filter == f"category:{cat['id']}",
-                lambda cid=cat["id"]: self._set_filter(f"category:{cid}"), cat["name"]))
+                self._cat_glyph(cat), active,
+                lambda cid=cat["id"]: self._set_filter(f"category:{cid}"), cat["name"],
+                fixed_color=C.category_color(cat),
+                on_drop_app=lambda aid, cid=cat["id"]: self._move_app_to_category(aid, cid)))
         items.append(ft.Container(expand=True))
         add = ft.Container(ft.Icon(ft.Icons.ADD, size=16, color=C.MUTED_2),
                            width=44, height=44, border_radius=22, alignment=ft.alignment.center,
@@ -559,7 +440,8 @@ class CenturioUI:
             height=38, width=440, bgcolor=C.PANEL, border=ft.border.all(1, C.LINE),
             border_radius=10, padding=ft.padding.only(12, 0, 8, 0),
         )
-        sort_labels = {"alpha": "По алфавиту", "recent": "Недавние", "added": "Недавно добавленные"}
+        sort_labels = {"alpha": "По алфавиту", "recent": "Недавние",
+                       "added": "Недавно добавленные", "manual": "Вручную"}
         sort_btn = ft.Container(
             ft.Row([T(sort_labels[self.sort], size=12.5, color=C.MUTED),
                     ft.Icon(ft.Icons.KEYBOARD_ARROW_DOWN, size=14, color=C.MUTED)], spacing=7),
@@ -579,6 +461,12 @@ class CenturioUI:
                     view_btn(ft.Icons.VIEW_LIST, "list", "Список")], spacing=0),
             border=ft.border.all(1, C.LINE), border_radius=9, clip_behavior=ft.ClipBehavior.HARD_EDGE,
         )
+        rescan_btn = ft.Container(
+            ft.Icon(ft.Icons.REFRESH, size=17, color=C.MUTED),
+            width=36, height=36, alignment=ft.alignment.center,
+            border=ft.border.all(1, C.LINE), border_radius=9,
+            on_click=lambda e: self._rescan(), tooltip="Пересканировать приложения и иконки")
+        self._hoverable(rescan_btn, None, C.PANEL_2)
         add_btn = ft.Container(
             ft.Row([ft.Icon(ft.Icons.ADD, size=15, color=C.BG_1),
                     T("Добавить приложение", size=13, weight=ft.FontWeight.W_600, color=C.BG_1)],
@@ -587,13 +475,14 @@ class CenturioUI:
             border_radius=9, on_click=lambda e: self._open_app_dialog(), alignment=ft.alignment.center,
         )
         return ft.Container(
-            ft.Row([search, ft.Container(expand=True), sort_btn, view_toggle, add_btn],
+            ft.Row([search, ft.Container(expand=True), sort_btn, view_toggle, rescan_btn, add_btn],
                    spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.padding.only(28, 18, 28, 12),
         )
 
     # ---------- content ----------
     def _build_content(self):
+        self._sel_id = self._selected_id()
         apps = self.apps()
         if not apps:
             return [self._empty("Библиотека пуста",
@@ -677,6 +566,8 @@ class CenturioUI:
             return sorted(apps, key=lambda a: a.get("last_launched", 0), reverse=True)
         if self.sort == "added":
             return sorted(apps, key=lambda a: a.get("added_at", 0), reverse=True)
+        if self.sort == "manual":
+            return sorted(apps, key=lambda a: (a.get("order", 0), a.get("added_at", 0)))
         return apps
 
     def _hero(self, a):
@@ -757,12 +648,76 @@ class CenturioUI:
                                     on_click=lambda e, cid=sec["cid"]: self._open_categories(cid)))
         return ft.Container(ft.Row(row, spacing=10), padding=ft.padding.only(0, 10, 0, 14))
 
+    def _use_poster(self, a):
+        """A game with a portrait poster renders as a tall poster tile when the
+        poster layout is enabled (looks like a real game library)."""
+        return bool(self.state()["settings"].get("game_posters", True)
+                    and _is_launcher_art(a) and img_b64(a.get("poster")))
+
     def _grid(self, apps):
         # A wrapping row of fixed-size tiles flows and sizes to its content, so it
         # never clips rows regardless of window width (unlike a fixed-height GridView).
-        tiles = [self._tile(a) for a in apps]
-        return ft.Container(ft.Row(tiles, wrap=True, spacing=15, run_spacing=15),
+        tiles = [self._draggable_tile(a, apps) for a in apps]
+        return ft.Container(ft.Row(tiles, wrap=True, spacing=15, run_spacing=15,
+                                   vertical_alignment=ft.CrossAxisAlignment.START),
                             padding=ft.padding.only(0, 0, 0, 10))
+
+    def _draggable_tile(self, a, section_apps):
+        """A tile that can be dragged to reorder (drop on another tile) or moved
+        to another category (drop on a rail category)."""
+        base = self._poster_tile(a) if self._use_poster(a) else self._tile(a)
+        drag = ft.Draggable(group="apps", content=base, data=a["id"])
+
+        def on_accept(e):
+            src = self.page.get_control(e.src_id)
+            if src is not None and getattr(src, "data", None):
+                self._reorder_app(section_apps, src.data, a["id"])
+        return ft.DragTarget(group="apps", content=drag, on_accept=on_accept)
+
+    def _poster_tile(self, a):
+        """A 2:3 portrait poster tile for a game (Steam library_600x900)."""
+        compact = self.state()["settings"].get("tile_size") == "compact"
+        width = 128 if compact else 158
+        height = round(width * 1.5)
+        running = a["id"] in self.running
+        poster = ft.Image(src_base64=img_b64(a.get("poster")), width=width, height=height,
+                          fit=ft.ImageFit.COVER)
+        # Gradient scrim + name at the bottom so the title stays readable.
+        scrim = ft.Container(
+            T(a["name"], size=12.5, weight=ft.FontWeight.W_600, color="#ffffff",
+              max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+            left=0, right=0, bottom=0, padding=ft.padding.only(10, 20, 10, 9),
+            gradient=ft.LinearGradient(begin=ft.alignment.top_center, end=ft.alignment.bottom_center,
+                                       colors=["#00000000", "#000000e8"]))
+        children = [poster, scrim]
+        if running:
+            children.append(ft.Container(
+                ft.Row([ft.Container(width=5, height=5, border_radius=3, bgcolor=C.GREEN),
+                        T("Запущено", size=10, weight=ft.FontWeight.W_600, color="#d8fce6")],
+                       spacing=5, tight=True),
+                left=8, top=8, bgcolor="#0c100e", border=ft.border.all(1, "#2a5f42"),
+                border_radius=20, padding=ft.padding.symmetric(3, 8)))
+        children.append(ft.Container(
+            ft.Icon(ft.Icons.STAR if a.get("favorite") else ft.Icons.STAR_BORDER, size=14,
+                    color=C.STAR if a.get("favorite") else "#ffffff"),
+            right=8, top=8, width=26, height=26, border_radius=8, bgcolor="#0c0c0edd",
+            alignment=ft.alignment.center, on_click=lambda e, i=a["id"]: self._toggle_fav(i)))
+
+        selected = a["id"] == self._sel_id
+        tile = ft.Container(
+            ft.Stack(children), width=width, height=height, bgcolor=C.PANEL,
+            border=ft.border.all(2, self._accent()) if selected else ft.border.all(1, C.LINE),
+            border_radius=12, clip_behavior=ft.ClipBehavior.HARD_EDGE)
+
+        def on_hover(e):
+            if a["id"] == self._sel_id:
+                return
+            tile.border = ft.border.all(1, C.LINE_5 if e.data == "true" else C.LINE)
+            tile.update()
+        tile.on_hover = on_hover
+        return ft.GestureDetector(tile, on_tap=lambda e, i=a["id"]: self._launch(i),
+                                  on_secondary_tap=lambda e, ap=a: self._open_context_menu(ap),
+                                  mouse_cursor=ft.MouseCursor.CLICK)
 
     def _tile(self, a):
         compact = self.state()["settings"].get("tile_size") == "compact"
@@ -799,15 +754,19 @@ class CenturioUI:
             ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.padding.only(13, 11, 13, 12))
 
+        selected = a["id"] == self._sel_id
         tile = ft.Container(
             ft.Column([ft.Container(ft.Stack(cover_children, expand=True), height=cover_h,
                                     clip_behavior=ft.ClipBehavior.HARD_EDGE), foot],
                       spacing=0, tight=True),
-            width=width, bgcolor=C.PANEL, border=ft.border.all(1, C.LINE), border_radius=14,
-            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            width=width, bgcolor=C.PANEL,
+            border=ft.border.all(2, self._accent()) if selected else ft.border.all(1, C.LINE),
+            border_radius=14, clip_behavior=ft.ClipBehavior.HARD_EDGE,
         )
 
         def on_hover(e):
+            if a["id"] == self._sel_id:
+                return
             tile.border = ft.border.all(1, C.LINE_5 if e.data == "true" else C.LINE)
             tile.update()
         tile.on_hover = on_hover
@@ -836,11 +795,14 @@ class CenturioUI:
             controls.append(ft.Container(ft.Icon(ft.Icons.MORE_HORIZ, size=16, color=C.MUTED),
                                          width=30, height=30, border_radius=9, alignment=ft.alignment.center,
                                          on_click=lambda e, ap=a: self._open_context_menu(ap)))
+            selected = a["id"] == self._sel_id
             row = ft.Container(ft.Row(controls, spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                                padding=ft.padding.symmetric(10, 14), border_radius=11,
-                               border=ft.border.all(1, C.LINE), bgcolor=C.PANEL,
+                               border=ft.border.all(2, self._accent()) if selected else ft.border.all(1, C.LINE),
+                               bgcolor=C.PANEL,
                                on_click=lambda e, i=a["id"]: self._launch(i))
-            self._hoverable(row, C.PANEL, C.PANEL_2)
+            if not selected:
+                self._hoverable(row, C.PANEL, C.PANEL_2)
             rows.append(ft.GestureDetector(row, on_secondary_tap=lambda e, ap=a: self._open_context_menu(ap)))
         return ft.Container(ft.Column(rows, spacing=6), padding=ft.padding.only(0, 0, 0, 10))
 
@@ -903,20 +865,107 @@ class CenturioUI:
         self.filter = f
         self.query = ""
         self.search_field.value = ""
+        self.selected = -1
+        self._persist_view()
         self.refresh()
 
     def _set_mode(self, m):
         self.mode = m
+        self._persist_view()
         self.refresh()
 
     def _cycle_sort(self):
-        order = ["alpha", "recent", "added"]
-        self.sort = order[(order.index(self.sort) + 1) % len(order)]
+        order = ["alpha", "recent", "added", "manual"]
+        cur = self.sort if self.sort in order else "alpha"
+        self.sort = order[(order.index(cur) + 1) % len(order)]
+        self._persist_view()
+        self.refresh()
+
+    def _move_app_to_category(self, app_id, cid):
+        a = self.store.get_app(app_id)
+        if a and a.get("category_id") != cid:
+            self.store.update_app(app_id, {"category_id": cid})
+            cat = next((c for c in self.categories() if c["id"] == cid), None)
+            self._toast(f"Перемещено в «{cat['name']}»" if cat else "Перемещено")
+            self._on_library_changed()
+
+    def _reorder_app(self, section_apps, dragged_id, target_id):
+        """Place the dragged app just before the target within its section and
+        switch to manual sort so the new order sticks and is visible."""
+        ids = [a["id"] for a in section_apps]
+        if dragged_id not in ids or dragged_id == target_id:
+            return
+        ids.remove(dragged_id)
+        ids.insert(ids.index(target_id) if target_id in ids else len(ids), dragged_id)
+        self.store.reorder_apps(ids)
+        if self.sort != "manual":
+            self.sort = "manual"
+            self._persist_view()
         self.refresh()
 
     def _on_search(self, e):
         self.query = e.control.value
+        self.selected = -1
         self.refresh()
+
+    def _icon_cache_dir(self):
+        from pathlib import Path
+        return str(Path(self.store.path).parent / "icons")
+
+    def _rescan(self, silent=False):
+        """Re-resolve icons for existing apps and look for newly installed
+        programs. Runs off the UI thread; toasts the result."""
+        import threading
+
+        if not silent:
+            self._toast("Пересканирование…")
+
+        def work():
+            from . import discovery, log
+            try:
+                cache = self._icon_cache_dir()
+                changed = discovery.backfill_icons(self.store, cache, refresh=True)
+                found = discovery.discover_apps(cache)
+                existing = {(a.get("path") or "").lower() for a in self.store.state()["apps"]}
+                new = [a for a in found if (a.get("path") or "").lower() not in existing]
+                self._new_installed = len(new)
+                self._on_library_changed()
+                if new:
+                    self._toast(f"Найдено новых программ: {len(new)} — откройте «Добавить приложение»")
+                elif not silent:
+                    self._toast("Иконки обновлены" if changed else "Всё актуально")
+            except Exception:
+                log.exception("rescan failed")
+                if not silent:
+                    self._toast("Не удалось пересканировать", error=True)
+        threading.Thread(target=work, daemon=True).start()
+
+    # ---------- keyboard navigation ----------
+    def _flat_apps(self):
+        """Apps in on-screen order (the grid/list sections), for arrow-key nav."""
+        return [a for sec in self._sections() for a in sec["apps"]]
+
+    def _selected_id(self):
+        flat = self._flat_apps()
+        if 0 <= self.selected < len(flat):
+            return flat[self.selected]["id"]
+        return None
+
+    def move_selection(self, delta):
+        flat = self._flat_apps()
+        if not flat:
+            self.selected = -1
+            return
+        cur = self.selected if self.selected >= 0 else (-1 if delta > 0 else 0)
+        self.selected = max(0, min(len(flat) - 1, cur + delta))
+        self.refresh()
+
+    def activate_selected(self):
+        flat = self._flat_apps()
+        if not flat:
+            return
+        idx = self.selected if 0 <= self.selected < len(flat) else 0
+        self._launch(flat[idx]["id"])
 
     def _launch(self, app_id):
         app = self.store.get_app(app_id)

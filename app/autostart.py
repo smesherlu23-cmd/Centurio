@@ -1,14 +1,15 @@
-"""Start-with-the-OS integration.
+"""Start-with-Windows integration.
 
-On Windows this writes an HKCU ...\\Run registry value. On Linux it drops a
-.desktop file in ~/.config/autostart. macOS uses a LaunchAgent plist. All
-paths fail soft — autostart is best-effort and never crashes the app.
+Writes an ``HKCU\\...\\Run`` registry value so Centurio launches (hidden to the
+tray) when the user signs in. Best-effort — it never crashes the app, and on a
+non-Windows host (e.g. during tests) it simply does nothing.
 """
 from __future__ import annotations
 
 import os
 import sys
-from pathlib import Path
+
+from . import log
 
 APP_NAME = "Centurio"
 _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -27,70 +28,20 @@ def _launch_command() -> str:
 
 
 def set_autostart(enabled: bool) -> bool:
-    try:
-        if os.name == "nt":
-            return _set_windows(enabled)
-        if sys.platform == "darwin":
-            return _set_macos(enabled)
-        return _set_linux(enabled)
-    except Exception:
+    if os.name != "nt":
         return False
+    try:
+        import winreg  # type: ignore
 
-
-# ---- Windows ----
-def _set_windows(enabled: bool) -> bool:
-    import winreg  # type: ignore
-
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
-        if enabled:
-            winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, _launch_command())
-        else:
-            try:
-                winreg.DeleteValue(key, APP_NAME)
-            except FileNotFoundError:
-                pass
-    return True
-
-
-# ---- Linux ----
-def _set_linux(enabled: bool) -> bool:
-    autostart_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "autostart"
-    desktop = autostart_dir / "centurio.desktop"
-    if enabled:
-        autostart_dir.mkdir(parents=True, exist_ok=True)
-        desktop.write_text(
-            "[Desktop Entry]\n"
-            "Type=Application\n"
-            f"Name={APP_NAME}\n"
-            f"Exec={_launch_command().replace(chr(34), '')}\n"
-            "X-GNOME-Autostart-enabled=true\n"
-            "Terminal=false\n",
-            encoding="utf-8",
-        )
-    elif desktop.exists():
-        desktop.unlink()
-    return True
-
-
-# ---- macOS ----
-def _set_macos(enabled: bool) -> bool:
-    agents = Path.home() / "Library" / "LaunchAgents"
-    plist = agents / "com.centurio.app.plist"
-    if enabled:
-        agents.mkdir(parents=True, exist_ok=True)
-        exe = sys.executable
-        script = os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] else ""
-        args = "".join(f"<string>{a}</string>" for a in [exe, script, "--hidden"] if a)
-        plist.write_text(
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
-            '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
-            '<plist version="1.0"><dict>'
-            '<key>Label</key><string>com.centurio.app</string>'
-            f'<key>ProgramArguments</key><array>{args}</array>'
-            '<key>RunAtLoad</key><true/></dict></plist>',
-            encoding="utf-8",
-        )
-    elif plist.exists():
-        plist.unlink()
-    return True
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            if enabled:
+                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, _launch_command())
+            else:
+                try:
+                    winreg.DeleteValue(key, APP_NAME)
+                except FileNotFoundError:
+                    pass
+        return True
+    except Exception:
+        log.exception("set_autostart failed")
+        return False

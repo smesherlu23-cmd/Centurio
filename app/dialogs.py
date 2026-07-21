@@ -1,11 +1,13 @@
 """Modal dialogs: add/edit app, category management, settings."""
 from __future__ import annotations
 
+import shlex
+
 import flet as ft
 
 from . import colors as C
+from .format import ICON_PACK, T, cat_icon, initials
 from .store import hue_from_string
-from .ui import CATEGORY_ICON_CHOICES, cat_icon, initials, T
 
 
 def _field_label(text):
@@ -143,9 +145,10 @@ def open_app_dialog(app_ui, existing=None):
 def open_add_picker(app_ui):
     """Add apps by picking from a list of already-installed applications.
 
-    The list is discovered automatically (Start Menu / .desktop / .app). The
-    user just clicks an app to add it — no naming or describing needed. A
-    manual file picker remains available for anything not in the list.
+    The list is discovered automatically (Start Menu / Uninstall / App Paths /
+    Steam / Epic). The user ticks one or more apps and adds them in a batch —
+    no naming or describing needed. A manual file picker remains available for
+    anything not in the list.
     """
     import threading
     from pathlib import Path
@@ -158,7 +161,8 @@ def open_add_picker(app_ui):
     icon_cache = str(Path(store.path).parent / "icons")
 
     # Category is chosen explicitly by the user (not inferred from the current view).
-    ui_state = {"category_id": cats[0]["id"] if cats else "work", "query": "", "apps": None}
+    ui_state = {"category_id": cats[0]["id"] if cats else "work", "query": "", "apps": None,
+                "selected": set()}
 
     existing_paths = {(a.get("path") or "").lower() for a in store.state()["apps"]}
 
@@ -172,37 +176,59 @@ def open_add_picker(app_ui):
     status = T("Сканирование установленных приложений…", size=12, color=C.MUTED_2, font_family="monospace")
     list_view = ft.ListView(spacing=6, expand=True)
 
-    def add_app(a):
-        path = a.get("path") or ""
-        if path.lower() in existing_paths:
+    def toggle_sel(a):
+        p = (a.get("path") or "").lower()
+        if not p or p in existing_paths:
             return
-        store.add_app({"name": a["name"], "path": path, "icon": a.get("icon"),
+        sel = ui_state["selected"]
+        sel.discard(p) if p in sel else sel.add(p)
+        _update_add_btn()
+        render()
+
+    def _store_add(a):
+        store.add_app({"name": a["name"], "path": a.get("path") or "", "icon": a.get("icon"),
                        "icon_fit": a.get("icon_fit"), "sub": a.get("sub", ""),
-                       "track_exe": a.get("track_exe"),
+                       "track_exe": a.get("track_exe"), "poster": a.get("poster"),
                        "category_id": ui_state["category_id"]})
-        existing_paths.add(path.lower())
-        app_ui._on_library_changed()
-        app_ui._toast(f"Добавлено: {a['name']}")
+        existing_paths.add((a.get("path") or "").lower())
+
+    def add_selected():
+        sel = ui_state["selected"]
+        apps = ui_state["apps"] or []
+        to_add = [a for a in apps if (a.get("path") or "").lower() in sel
+                  and (a.get("path") or "").lower() not in existing_paths]
+        for a in to_add:
+            _store_add(a)
+        sel.clear()
+        if to_add:
+            app_ui._on_library_changed()
+            app_ui._toast(f"Добавлено приложений: {len(to_add)}")
+        _update_add_btn()
         render()
 
     def make_row(a):
-        added = (a.get("path") or "").lower() in existing_paths
-        icon = app_ui._chip_visual(a, 34, 15, 9)
-        trailing = ft.Icon(ft.Icons.CHECK_CIRCLE if added else ft.Icons.ADD_CIRCLE_OUTLINE,
-                           size=20, color=C.GREEN if added else C.MUTED)
+        p = (a.get("path") or "").lower()
+        added = p in existing_paths
+        checked = p in ui_state["selected"]
+        if added:
+            box = ft.Icon(ft.Icons.CHECK_CIRCLE, size=20, color=C.GREEN)
+        else:
+            box = ft.Icon(ft.Icons.CHECK_BOX if checked else ft.Icons.CHECK_BOX_OUTLINE_BLANK,
+                          size=20, color=app_ui._accent() if checked else C.MUTED)
+        normal = C.PANEL_2 if checked else C.BG_1
         row = ft.Container(
-            ft.Row([icon,
+            ft.Row([box, app_ui._chip_visual(a, 34, 15, 9),
                     ft.Column([T(a["name"], size=13, weight=ft.FontWeight.W_600, color=C.TEXT,
                                  max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                                T(a.get("path") or "", size=10.5, color=C.MUTED_2, max_lines=1,
                                  overflow=ft.TextOverflow.ELLIPSIS, font_family="monospace")],
-                              spacing=1, expand=True, tight=True),
-                    trailing], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=ft.padding.symmetric(8, 12), border_radius=10, bgcolor=C.BG_1,
-            border=ft.border.all(1, C.LINE), opacity=0.5 if added else 1,
-            on_click=None if added else (lambda e, ap=a: add_app(ap)))
+                              spacing=1, expand=True, tight=True)],
+                   spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.symmetric(8, 12), border_radius=10, bgcolor=normal,
+            border=ft.border.all(1, app_ui._accent() if checked else C.LINE), opacity=0.5 if added else 1,
+            on_click=None if added else (lambda e, ap=a: toggle_sel(ap)))
         if not added:
-            app_ui._hoverable(row, C.BG_1, C.PANEL_2)
+            app_ui._hoverable(row, normal, C.PANEL_2)
         return row
 
     def render():
@@ -266,9 +292,24 @@ def open_add_picker(app_ui):
     def browse():
         picker.pick_files(dialog_title="Выберите приложение", allow_multiple=False)
 
+    # Primary "add selected" button whose label reflects the selection count.
+    add_btn_label = T("Добавить выбранные", size=13, weight=ft.FontWeight.W_600, color=C.BG_1)
+    add_btn = ft.Container(add_btn_label, height=40, padding=ft.padding.symmetric(0, 18),
+                           bgcolor="#f5f5f7", border_radius=9, alignment=ft.alignment.center,
+                           on_click=lambda e: add_selected(), opacity=0.5)
+
+    def _update_add_btn():
+        n = len(ui_state["selected"])
+        add_btn_label.value = f"Добавить выбранные ({n})" if n else "Добавить выбранные"
+        add_btn.opacity = 1 if n else 0.5
+        if add_btn_label.page:
+            add_btn_label.update()
+        if add_btn.page:
+            add_btn.update()
+
     body = ft.Column([
-        T("Выберите приложения из установленных — название подставится автоматически.",
-          size=12.5, color=C.MUTED_2),
+        T("Отметьте приложения галочками и нажмите «Добавить выбранные» — названия "
+          "подставятся автоматически.", size=12.5, color=C.MUTED_2),
         ft.Row([T("Добавить в категорию", size=12.5, color=C.TEXT_2), cat_dd],
                alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         search,
@@ -283,7 +324,8 @@ def open_add_picker(app_ui):
         content=body,
         actions=[ft.Row([_outline_btn("Указать файл вручную", ft.Icons.FOLDER_OPEN, browse),
                          ft.Container(expand=True),
-                         _primary_btn("Готово", lambda: page.close(dialog))])],
+                         _outline_btn("Готово", None, lambda: page.close(dialog)),
+                         add_btn])],
         shape=ft.RoundedRectangleBorder(radius=16))
     page.open(dialog)
     render()
@@ -324,6 +366,8 @@ def _open_detail_dialog(app_ui, existing):
     sub_in = _text_input(draft["sub"], "Короткое описание (необязательно)")
     hotkey_in = _text_input(draft.get("hotkey") or "", "Например, Ctrl+Shift+G")
     track_in = _text_input(draft.get("track_exe") or "", "Например, game.exe")
+    args_in = _text_input(" ".join(draft.get("args") or []), "Например, --profile work")
+    workdir_in = _text_input(draft.get("working_dir") or "", "Рабочая папка (необязательно)")
 
     def on_name(e):
         draft["name"] = e.control.value
@@ -345,6 +389,41 @@ def _open_detail_dialog(app_ui, existing):
     def on_track(e):
         draft["track_exe"] = e.control.value.strip() or None
     track_in.on_change = on_track
+
+    def on_args(e):
+        val = e.control.value.strip()
+        try:
+            draft["args"] = shlex.split(val, posix=False) if val else []
+        except ValueError:
+            draft["args"] = val.split()
+    args_in.on_change = on_args
+
+    def on_workdir(e):
+        draft["working_dir"] = e.control.value.strip()
+    workdir_in.on_change = on_workdir
+
+    admin_sw = ft.Switch(value=bool(draft.get("run_as_admin")), scale=0.75,
+                         active_track_color="#f5f5f7", active_color=C.BG_1,
+                         inactive_thumb_color=C.MUTED, inactive_track_color="#2a2a30",
+                         on_change=lambda e: draft.__setitem__("run_as_admin", e.control.value))
+
+    # A dedicated directory picker for the working-folder field.
+    dir_picker = getattr(app_ui, "_dir_picker", None)
+    if dir_picker is None:
+        dir_picker = ft.FilePicker()
+        app_ui._dir_picker = dir_picker
+        page.overlay.append(dir_picker)
+        page.update()
+
+    def on_dir(e):
+        if e.path:
+            draft["working_dir"] = e.path
+            workdir_in.value = e.path
+            workdir_in.update()
+    dir_picker.on_result = on_dir
+
+    def browse_dir():
+        dir_picker.get_directory_path(dialog_title="Выберите рабочую папку")
 
     cat_dd = ft.Dropdown(
         value=draft["category_id"], bgcolor=C.BG_1, border_color=C.LINE,
@@ -413,8 +492,8 @@ def _open_detail_dialog(app_ui, existing):
             return
         if is_edit:
             store.update_app(existing["id"], {k: draft.get(k) for k in
-                             ("name", "path", "sub", "category_id", "hue", "favorite", "quick",
-                              "hotkey", "track_exe")})
+                             ("name", "path", "args", "working_dir", "run_as_admin", "sub",
+                              "category_id", "hue", "favorite", "quick", "hotkey", "track_exe")})
         else:
             store.add_app(draft)
         page.close(dialog)
@@ -446,6 +525,11 @@ def _open_detail_dialog(app_ui, existing):
         ft.Container(height=6), _field_label("Процесс для статуса «Запущено»"), track_in,
         T("Имя exe запущенного приложения — для игр Steam/Epic и программ, запущенных вне Centurio.",
           size=10.5, color=C.MUTED_2),
+        ft.Container(height=6), _field_label("Аргументы запуска"), args_in,
+        ft.Container(height=6), _field_label("Рабочая папка"),
+        ft.Row([workdir_in, _outline_btn("Обзор", ft.Icons.FOLDER_OPEN, browse_dir)], spacing=8,
+               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        check_row("Запуск от администратора", "Запрашивать повышение прав (UAC) при запуске", admin_sw),
         check_row("В избранное", "Показывать в разделе «Избранное»", fav_sw),
         check_row("Быстрый запуск", "Закрепить сверху; без своей клавиши — Ctrl+1…9", quick_sw),
     ], spacing=6, tight=True, scroll=ft.ScrollMode.AUTO, width=460)
@@ -471,6 +555,12 @@ def _open_detail_dialog(app_ui, existing):
     page.open(dialog)
 
 
+def _mini_btn(icon, on_click, color=None):
+    return ft.Container(ft.Icon(icon, size=15, color=color or C.MUTED_2),
+                        width=26, height=26, border_radius=7, alignment=ft.alignment.center,
+                        on_click=lambda e: on_click())
+
+
 def open_categories_dialog(app_ui):
     page = app_ui.page
     store = app_ui.store
@@ -478,25 +568,32 @@ def open_categories_dialog(app_ui):
 
     def rebuild():
         list_col.controls = []
-        for c in app_ui.categories():
+        cats = app_ui.categories()
+        for idx, c in enumerate(cats):
             count = sum(1 for a in store.state()["apps"] if a.get("category_id") == c["id"])
-            name_field = ft.TextField(
-                value=c["name"], bgcolor="transparent", border=ft.InputBorder.NONE,
-                color=C.TEXT, text_size=13, dense=True, content_padding=ft.padding.only(0, 0, 0, 0),
-                on_blur=lambda e, cid=c["id"]: store.update_category(cid, {"name": e.control.value.strip() or "Категория"}),
-                expand=True)
+            glyph = ft.Container(app_ui._cat_glyph(c, size=16), width=26, height=26,
+                                 alignment=ft.alignment.center)
             list_col.controls.append(ft.Container(
-                ft.Row([ft.Icon(cat_icon(c.get("icon")), size=16, color=C.MUTED),
-                        name_field,
+                ft.Row([glyph,
+                        T(c["name"], size=13, color=C.TEXT, weight=ft.FontWeight.W_500,
+                          expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                         T(str(count), size=11, color=C.MUTED_2, font_family="monospace"),
-                        ft.Container(ft.Icon(ft.Icons.DELETE_OUTLINE, size=15, color=C.MUTED_2),
-                                     width=26, height=26, border_radius=7, alignment=ft.alignment.center,
-                                     on_click=lambda e, cid=c["id"]: remove_cat(cid))],
-                       spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        _mini_btn(ft.Icons.ARROW_UPWARD, lambda cid=c["id"]: move(cid, -1),
+                                  color=C.MUTED_3 if idx == 0 else C.MUTED_2),
+                        _mini_btn(ft.Icons.ARROW_DOWNWARD, lambda cid=c["id"]: move(cid, 1),
+                                  color=C.MUTED_3 if idx == len(cats) - 1 else C.MUTED_2),
+                        _mini_btn(ft.Icons.TUNE, lambda cc=c: _open_category_editor(app_ui, cc, rebuild)),
+                        _mini_btn(ft.Icons.DELETE_OUTLINE, lambda cid=c["id"]: remove_cat(cid))],
+                       spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=ft.padding.symmetric(8, 12), border_radius=10, bgcolor=C.BG_1,
                 border=ft.border.all(1, C.LINE)))
         if page.controls:
             page.update()
+
+    def move(cid, delta):
+        store.move_category(cid, delta)
+        rebuild()
+        app_ui._on_library_changed()
 
     def remove_cat(cid):
         cat = next((c for c in app_ui.categories() if c["id"] == cid), None)
@@ -516,8 +613,9 @@ def open_categories_dialog(app_ui):
         name = new_field.value.strip()
         if not name:
             return
-        icon = CATEGORY_ICON_CHOICES[len(app_ui.categories()) % len(CATEGORY_ICON_CHOICES)]
-        store.add_category(name, icon)
+        # New categories start as a first-letter chip (icon=None); the colour is
+        # derived from the name until the user picks one.
+        store.add_category(name)
         new_field.value = ""
         new_field.update()
         rebuild()
@@ -527,8 +625,8 @@ def open_categories_dialog(app_ui):
     rebuild()
 
     body = ft.Column([
-        T("Группируйте приложения по смыслу — «Работа», «Игры», «Разработка».",
-                size=12.5, color=C.MUTED_2),
+        T("Группируйте приложения по смыслу. Стрелки меняют порядок, "
+          "значок «настройки» — цвет и иконку.", size=12.5, color=C.MUTED_2),
         ft.Container(height=6), list_col, ft.Container(height=6),
         _field_label("Новая категория"),
         ft.Row([new_field, _outline_btn("Добавить", ft.Icons.ADD, add_cat)], spacing=8,
@@ -543,6 +641,119 @@ def open_categories_dialog(app_ui):
         shape=ft.RoundedRectangleBorder(radius=16),
     )
     page.open(dialog)
+
+
+def _open_category_editor(app_ui, cat, on_done):
+    """Edit a category's name, icon colour (RGB / hex) and icon (first letter
+    or a pick from the icon pack)."""
+    page = app_ui.page
+    store = app_ui.store
+    draft = {"name": cat["name"], "color": C.category_color(cat), "icon": cat.get("icon")}
+
+    name_in = _text_input(draft["name"], "Название категории")
+    name_in.on_change = lambda e: draft.__setitem__("name", e.control.value)
+
+    # ---- colour: preview + RGB sliders + hex field ----
+    preview = ft.Container(width=44, height=44, border_radius=11, bgcolor=draft["color"],
+                           border=ft.border.all(1, C.LINE_4))
+    r0, g0, b0 = C.hex_to_rgb(draft["color"])
+    hex_in = ft.TextField(value=draft["color"], hint_text="#RRGGBB", width=120,
+                          bgcolor=C.BG_1, border_color=C.LINE, focused_border_color=C.LINE_5,
+                          color=C.TEXT, text_size=13, height=42,
+                          content_padding=ft.padding.symmetric(6, 12))
+    sliders = {}
+
+    def apply_color(hexval, from_hex=False):
+        draft["color"] = hexval
+        preview.bgcolor = hexval
+        if preview.page:
+            preview.update()
+        if not from_hex:
+            hex_in.value = hexval
+            if hex_in.page:
+                hex_in.update()
+
+    def on_slider(_=None):
+        hexval = C.rgb_to_hex(int(sliders["r"].value), int(sliders["g"].value), int(sliders["b"].value))
+        apply_color(hexval)
+
+    def slider(key, val, color):
+        s = ft.Slider(min=0, max=255, value=val, active_color=color, on_change=on_slider, expand=True)
+        sliders[key] = s
+        return ft.Row([T(key.upper(), size=11, color=C.MUTED_2, width=14), s], spacing=6)
+
+    def on_hex(e):
+        parsed = C.parse_hex(e.control.value)
+        if parsed:
+            sliders["r"].value, sliders["g"].value, sliders["b"].value = C.hex_to_rgb(parsed)
+            for s in sliders.values():
+                if s.page:
+                    s.update()
+            apply_color(parsed, from_hex=True)
+    hex_in.on_change = on_hex
+
+    presets = ["#f5c518", "#4f7dff", "#3ecfaf", "#e34f4f", "#b06cf0", "#f0a020", "#7a8290", "#e6e6e8"]
+
+    def preset_swatch(col):
+        return ft.Container(width=26, height=26, border_radius=7, bgcolor=col,
+                            border=ft.border.all(1, C.LINE_4),
+                            on_click=lambda e, c=col: (sliders["r"].__setattr__("value", C.hex_to_rgb(c)[0]),
+                                                       sliders["g"].__setattr__("value", C.hex_to_rgb(c)[1]),
+                                                       sliders["b"].__setattr__("value", C.hex_to_rgb(c)[2]),
+                                                       [s.update() for s in sliders.values() if s.page],
+                                                       apply_color(c)))
+
+    # ---- icon: first-letter option + icon pack grid ----
+    icon_cells = ft.Row([], wrap=True, spacing=6, run_spacing=6)
+
+    def render_icons():
+        icon_cells.controls = [icon_cell(None)] + [icon_cell(name) for name in ICON_PACK]
+        if icon_cells.page:
+            icon_cells.update()
+
+    def icon_cell(name):
+        selected = draft["icon"] == name
+        inner = (T(initials(draft["name"]) if name is None else "", size=14,
+                   weight=ft.FontWeight.BOLD, color=C.TEXT)
+                 if name is None else ft.Icon(cat_icon(name), size=17, color=C.TEXT))
+        return ft.Container(inner, width=34, height=34, border_radius=9, alignment=ft.alignment.center,
+                            bgcolor=C.PANEL_3 if selected else C.BG_1,
+                            border=ft.border.all(2 if selected else 1,
+                                                 app_ui._accent() if selected else C.LINE),
+                            tooltip="Первая буква" if name is None else name,
+                            on_click=lambda e, n=name: (draft.__setitem__("icon", n), render_icons()))
+
+    render_icons()
+
+    def save():
+        store.update_category(cat["id"], {"name": draft["name"].strip() or "Категория",
+                                          "color": draft["color"], "icon": draft["icon"]})
+        page.close(dlg)
+        on_done()
+        app_ui._on_library_changed()
+
+    body = ft.Column([
+        _field_label("Название"), name_in,
+        ft.Container(height=8), _field_label("Цвет иконки"),
+        ft.Row([preview, ft.Column([
+            slider("r", r0, "#e34f4f"), slider("g", g0, "#3ecfaf"), slider("b", b0, "#4f7dff"),
+        ], spacing=0, expand=True)], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ft.Row([hex_in, ft.Row([preset_swatch(c) for c in presets], spacing=6, wrap=True)],
+               spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ft.Container(height=8), _field_label("Иконка (первая буква или из набора)"),
+        ft.Container(icon_cells, height=140, bgcolor=C.BG_0, border_radius=10,
+                     border=ft.border.all(1, C.LINE_2), padding=ft.padding.all(8)),
+    ], spacing=6, tight=True, scroll=ft.ScrollMode.AUTO, width=460)
+
+    dlg = ft.AlertDialog(
+        modal=True, bgcolor=C.PANEL,
+        title=T("Категория", size=18, weight=ft.FontWeight.BOLD, color=C.TEXT),
+        content=body,
+        actions=[ft.Row([ft.Container(expand=True),
+                         _outline_btn("Отмена", None, lambda: page.close(dlg)),
+                         _primary_btn("Сохранить", save)])],
+        shape=ft.RoundedRectangleBorder(radius=16))
+    page.open(dlg)
 
 
 def open_settings_dialog(app_ui):
@@ -586,14 +797,75 @@ def open_settings_dialog(app_ui):
                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             padding=ft.padding.symmetric(10, 0), border=ft.border.only(top=ft.BorderSide(1, C.LINE_2)))
 
+    # ---- data: import / export / backup / portable ----
+    cfg_picker = getattr(app_ui, "_cfg_picker", None)
+    if cfg_picker is None:
+        cfg_picker = ft.FilePicker()
+        app_ui._cfg_picker = cfg_picker
+        page.overlay.append(cfg_picker)
+        page.update()
+
+    def do_export(e):
+        if e.path:
+            try:
+                p = store.export_data(e.path)
+                app_ui._toast(f"Экспортировано: {p.name}")
+            except Exception:
+                app_ui._toast("Не удалось экспортировать", error=True)
+
+    def do_import(e):
+        if e.files and e.files[0].path:
+            if store.import_data(e.files[0].path):
+                page.close(dialog)
+                app_ui._on_library_changed()
+                app_ui._toast("Конфигурация импортирована")
+            else:
+                app_ui._toast("Неверный файл конфигурации", error=True)
+
+    def export_cfg():
+        cfg_picker.on_result = do_export
+        cfg_picker.save_file(dialog_title="Экспорт конфигурации",
+                             file_name="centurio-config.json", allowed_extensions=["json"])
+
+    def import_cfg():
+        cfg_picker.on_result = do_import
+        cfg_picker.pick_files(dialog_title="Импорт конфигурации", allow_multiple=False,
+                              allowed_extensions=["json"])
+
+    def backup_cfg():
+        try:
+            p = store.backup()
+            app_ui._toast(f"Резервная копия: {p.name}")
+        except Exception:
+            app_ui._toast("Не удалось создать копию", error=True)
+
+    def go_portable():
+        confirm(app_ui, "Портативный режим?",
+                "Данные будут скопированы рядом с программой (centurio-data.json) — так "
+                "Centurio можно носить с собой. Продолжить?", "Включить",
+                lambda: (store.make_portable(), app_ui._toast("Портативный режим включён")),
+                danger=False)
+
+    portable_label = ("Портативный режим включён" if store.is_portable
+                      else "Включить портативный режим")
+
     body = ft.Column([
         T("Centurio — ваш пульт управления приложениями.", size=12.5, color=C.MUTED_2),
         ft.Container(height=8), _field_label("Акцентный цвет"), swatch_row,
         ft.Container(height=12), _field_label("Размер плиток"), tile_dd,
         setting_switch("Показывать «Быстрый запуск»", "Ряд закреплённых приложений сверху", "show_quick_row"),
+        setting_switch("Постеры для игр", "Вертикальные обложки Steam/Epic как в игровой библиотеке", "game_posters"),
+        setting_switch("Автообновление списка", "Периодически искать новые установленные программы", "auto_rescan"),
         setting_switch("Автозапуск с Windows", "Запускать Centurio при входе в систему", "autostart"),
         setting_switch("Сворачивать в трей", "Кнопка «свернуть» прячет окно в трей", "minimize_to_tray"),
         setting_switch("Закрывать в трей", "Крестик не закрывает приложение, а прячет его", "close_to_tray"),
+        ft.Container(height=12), _field_label("Данные и резервные копии"),
+        ft.Row([_outline_btn("Экспорт", ft.Icons.UPLOAD, export_cfg),
+                _outline_btn("Импорт", ft.Icons.DOWNLOAD, import_cfg),
+                _outline_btn("Резервная копия", ft.Icons.BACKUP, backup_cfg)],
+               spacing=8, wrap=True, run_spacing=8),
+        _outline_btn(portable_label, ft.Icons.USB,
+                     (lambda: None) if store.is_portable else go_portable),
         ft.Container(height=12),
         _outline_btn("Управление категориями", ft.Icons.FOLDER,
                      lambda: (page.close(dialog), open_categories_dialog(app_ui))),

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import flet as ft
 
-from app import autostart
+from app import autostart, log
 from app.hotkeys import HotkeyManager, quick_bindings
 from app.iconify import ensure_icons
 from app.launcher import Launcher
@@ -26,9 +26,11 @@ ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
 
 def main(page: ft.Page):
-    icon_path = ensure_icons(ASSETS_DIR)
-
     store = Store()
+    log.setup(log_dir=Path(store.path).parent)
+    log.debug("Centurio starting (argv=%s)", sys.argv)
+
+    icon_path = ensure_icons(ASSETS_DIR)
 
     is_web = page.web or os.environ.get("CENTURIO_WEB") == "1"
 
@@ -49,13 +51,21 @@ def main(page: ft.Page):
     }
     page.theme = ft.Theme(color_scheme_seed="#f5f5f7", font_family="Inter")
     if not is_web:
+        s = store.state()["settings"]
         page.window.title_bar_hidden = True
         page.window.frameless = True
-        page.window.width = 1400
-        page.window.height = 880
         page.window.min_width = 940
         page.window.min_height = 620
-        page.window.center()
+        # Restore the last window geometry, else default-size and center.
+        page.window.width = s.get("win_w") or 1400
+        page.window.height = s.get("win_h") or 880
+        if s.get("win_x") is not None and s.get("win_y") is not None:
+            page.window.left = s["win_x"]
+            page.window.top = s["win_y"]
+        else:
+            page.window.center()
+        if s.get("win_max"):
+            page.window.maximized = True
         page.window.prevent_close = True
 
     launcher = Launcher()
@@ -116,22 +126,55 @@ def main(page: ft.Page):
 
     # Keyboard shortcuts (in-app).
     def on_key(e: ft.KeyboardEvent):
-        if e.ctrl and e.key.lower() == "k":
+        key = e.key
+        if e.ctrl and key.lower() == "k":
             ui.search_field.focus()
-        elif e.key == "Escape" and ui.query:
-            ui.query = ""
-            ui.search_field.value = ""
-            ui.refresh()
-        elif e.ctrl and e.key.isdigit():
-            idx = int(e.key) - 1
+        elif key == "Escape":
+            if ui.query:
+                ui.query = ""
+                ui.search_field.value = ""
+                ui.selected = -1
+                ui.refresh()
+            elif ui.selected >= 0:
+                ui.selected = -1
+                ui.refresh()
+        elif e.ctrl and key.isdigit():
+            idx = int(key) - 1
             quick = [a for a in store.state()["apps"] if a.get("quick")]
             if 0 <= idx < len(quick):
                 ui._launch(quick[idx]["id"])
+        # Arrow-key navigation over the visible apps; Enter launches the cursor.
+        elif key in ("Arrow Right", "Arrow Down"):
+            ui.move_selection(1)
+        elif key in ("Arrow Left", "Arrow Up"):
+            ui.move_selection(-1)
+        elif key in ("Enter", "Numpad Enter"):
+            ui.activate_selected()
     page.on_keyboard_event = on_key
 
-    # OS-level window close (frameless still emits it via prevent_close).
+    # Persist window geometry (best-effort) as the user resizes/moves/maximizes.
+    def save_window():
+        try:
+            w, h = page.window.width, page.window.height
+            if page.window.maximized:
+                store.set_setting("win_max", True)
+                return
+            store.set_setting("win_max", False)
+            if w and h:
+                store.set_setting("win_w", int(w))
+                store.set_setting("win_h", int(h))
+            if page.window.left is not None and page.window.top is not None:
+                store.set_setting("win_x", int(page.window.left))
+                store.set_setting("win_y", int(page.window.top))
+        except Exception:
+            log.exception("saving window geometry failed")
+
+    # OS-level window events (frameless still emits close via prevent_close).
     def on_win_event(e):
-        if e.data == "close":
+        if e.data in ("resized", "moved", "maximize", "unmaximize"):
+            save_window()
+        elif e.data == "close":
+            save_window()
             close()
     page.window.on_event = on_win_event if not is_web else None
 
@@ -153,13 +196,25 @@ def main(page: ft.Page):
             if refresh:
                 store.set_setting("icon_schema", discovery.ICON_SCHEMA)
         except Exception:
-            pass
+            log.exception("icon backfill failed")
     import threading
     threading.Thread(target=_backfill, daemon=True).start()
 
     # Index running processes + register global hotkeys, then keep them live.
     refresh_runtime()
     launcher.start_monitor()
+
+    # Periodic auto-detection of newly installed programs (opt-in setting).
+    def _auto_rescan_loop():
+        import time as _t
+        while True:
+            _t.sleep(900)  # every 15 minutes
+            try:
+                if store.state()["settings"].get("auto_rescan"):
+                    ui._rescan(silent=True)
+            except Exception:
+                log.exception("auto-rescan tick failed")
+    threading.Thread(target=_auto_rescan_loop, daemon=True).start()
 
     # Apply persisted settings + start tray on desktop.
     if not is_web:

@@ -7,6 +7,7 @@ colour — echoing the refined Centurio palette.
 from __future__ import annotations
 
 import colorsys
+import re
 
 # Dark theme tokens (shared with the UI).
 BG_0 = "#08080a"
@@ -55,3 +56,44 @@ def chip_colors(hue: int) -> tuple[str, str]:
 def glyph_color(hue: int) -> str:
     """Glyph colour on top of a cover — solid white reads cleanly on every hue."""
     return "#ffffff"
+
+
+# ---- category icon colours (user-editable via RGB / hex) ----
+def parse_hex(text) -> str | None:
+    """Normalise a colour string to '#rrggbb', or None if unparseable.
+
+    Accepts '#rgb', '#rrggbb' (with or without '#'), 'rgb(r,g,b)' and 'r,g,b'."""
+    if not text:
+        return None
+    s = str(text).strip().lower()
+    m = re.match(r"rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$", s)
+    if not m:
+        m = re.match(r"(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})$", s)
+    if m:
+        return rgb_to_hex(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    s = s.lstrip("#")
+    if len(s) == 3 and all(c in "0123456789abcdef" for c in s):
+        s = "".join(c * 2 for c in s)
+    if len(s) == 6 and all(c in "0123456789abcdef" for c in s):
+        return "#" + s
+    return None
+
+
+def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    h = (parse_hex(hex_color) or "#888888").lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def rgb_to_hex(r: int, g: int, b: int) -> str:
+    clamp = lambda v: max(0, min(255, int(v)))
+    return "#%02x%02x%02x" % (clamp(r), clamp(g), clamp(b))
+
+
+def category_color(cat: dict) -> str:
+    """The category's icon colour: its explicit hex, else a pleasant colour
+    derived from the name so uncoloured categories still look distinct."""
+    from .store import hue_from_string
+    col = parse_hex(cat.get("color"))
+    if col:
+        return col
+    return cover_colors(hue_from_string(cat.get("name") or cat.get("id") or ""))[0]
