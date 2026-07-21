@@ -105,6 +105,8 @@ def _md5(text: str) -> str:
 # compile, so regular apps got no icons.
 _PS_ICON_FUNCS = r'''
 $ErrorActionPreference='SilentlyContinue'
+try{[Console]::OutputEncoding=[System.Text.Encoding]::UTF8}catch{}
+$OutputEncoding=[System.Text.Encoding]::UTF8
 $cache=__CACHE__
 Add-Type -AssemblyName System.Drawing
 $script:CentBig=$false
@@ -171,9 +173,14 @@ if($r){ Write-Output $r }
 
 
 def _run_powershell(script: str, timeout: int = 60):
+    # Decode as UTF-8 (the script forces UTF-8 output) with errors="replace" so
+    # non-ASCII app names on localized Windows can never raise a decode error
+    # and wipe out the whole result. The default text=True path uses the ANSI
+    # locale codepage, which mismatches PowerShell's console output codepage on
+    # e.g. Russian Windows and made every discovered app silently disappear.
     return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                          capture_output=True, text=True, timeout=timeout,
-                          creationflags=0x08000000)  # CREATE_NO_WINDOW
+                          capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          timeout=timeout, creationflags=0x08000000)  # CREATE_NO_WINDOW
 
 
 def _ps_literal(value: str | None) -> str:
@@ -431,28 +438,34 @@ def _vdf_val(text: str, key: str) -> str | None:
 
 def _steam_icon(root: str, appid: str) -> tuple[str | None, str]:
     """Return (image_path, fit) for a Steam game. Handles both the old flat
-    librarycache naming and the newer per-appid subfolder layout."""
+    librarycache naming and the newer per-appid subfolder layout.
+
+    Real cover/header art (which fills the whole tile) is always preferred over
+    the tiny 32px `_icon.jpg`; the flat icon is only a last resort, because on a
+    big tile it renders as a small blurry square rather than proper game art."""
     cache = os.path.join(root, "appcache", "librarycache")
-    # Flat layout: a small square icon reads best centered (contain).
-    icon = os.path.join(cache, f"{appid}_icon.jpg")
-    if os.path.exists(icon):
-        return icon, "contain"
-    # Flat layout: cover-style art fills the whole tile.
+    # Flat layout: cover-style art fills the whole tile — try these first.
     for suffix in (f"{appid}_library_600x900.jpg", f"{appid}_header.jpg",
                    f"{appid}_capsule_616x353.jpg", f"{appid}_capsule_231x87.jpg",
                    f"{appid}_library_hero.jpg", f"{appid}_logo.png"):
         p = os.path.join(cache, suffix)
         if os.path.exists(p):
             return p, "cover"
-    # Newer layout: appcache/librarycache/<appid>/<hash>.(jpg|png)
+    # Newer layout: appcache/librarycache/<appid>/<hash>.(jpg|png). Prefer the
+    # largest non-icon art; only fall back to an icon-named file if that's all.
     sub = os.path.join(cache, str(appid))
     if os.path.isdir(sub):
         imgs = glob.glob(os.path.join(sub, "*.jpg")) + glob.glob(os.path.join(sub, "*.png"))
         imgs = [p for p in imgs if os.path.isfile(p)]
+        art = [p for p in imgs if "icon" not in os.path.basename(p).lower()]
+        if art:
+            return max(art, key=lambda p: os.path.getsize(p)), "cover"
         if imgs:
-            best = max(imgs, key=lambda p: os.path.getsize(p))
-            fit = "contain" if "icon" in os.path.basename(best).lower() else "cover"
-            return best, fit
+            return max(imgs, key=lambda p: os.path.getsize(p)), "contain"
+    # Last resort: the small flat square icon, centered on a neutral cover.
+    icon = os.path.join(cache, f"{appid}_icon.jpg")
+    if os.path.exists(icon):
+        return icon, "contain"
     return None, "contain"
 
 
