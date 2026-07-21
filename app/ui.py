@@ -284,20 +284,28 @@ class CenturioUI:
                                        colors=[c1, c2]))
 
     def _cover_content(self, a, cover_h):
-        """The tile cover base container. Fit is decided from the *actual* image,
-        not the stored icon_fit (which may be stale):
+        """The tile cover base container. What to render is decided from the
+        *actual* image, not the stored icon_fit (which may be stale):
 
-          * Real launcher cover art fills the tile, cropping the overflow so
-            there are no empty bands (a wide header loses a little off each
-            side, a portrait cover shows its middle band).
+          * A landscape launcher banner fills the tile, cropping the overflow
+            so there are no empty bands.
+          * A game title logo (its path contains "logo") is shown whole and
+            prominent on a subtle gradient — a composed cover for games with no
+            banner, so they read as intentional rather than a lost square.
           * A small image — a plain app/exe icon, or a tiny Steam _icon.jpg
-            fallback for a game with no cached cover — is shown at its natural
-            small size, centred on a neutral gradient, never upscaled into a
-            blur.
+            fallback — is shown at natural small size, centred on a gradient,
+            never upscaled into a blur.
         """
         icon_path = a.get("icon")
         size = _img_size(icon_path)
         if _is_launcher_art(a) and size and max(size) >= _MIN_ART_PX and icon_image(icon_path):
+            if "logo" in os.path.basename(str(icon_path)).lower():
+                return ft.Container(
+                    icon_image(icon_path, fit=ft.ImageFit.CONTAIN, expand=True),
+                    expand=True, alignment=ft.alignment.center,
+                    padding=ft.padding.symmetric(cover_h * 0.16, cover_h * 0.12),
+                    gradient=ft.LinearGradient(begin=ft.alignment.top_left, end=ft.alignment.bottom_right,
+                                               colors=["#23262e", "#121319"]))
             return ft.Container(icon_image(icon_path, fit=ft.ImageFit.COVER, expand=True),
                                 expand=True, bgcolor="#131317")
         px = min(int(cover_h * 0.62), 88)

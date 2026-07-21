@@ -436,46 +436,108 @@ def _vdf_val(text: str, key: str) -> str | None:
     return m.group(1) if m else None
 
 
-# Steam art filenames in the order we want them for a landscape tile that is
-# filled and cropped ("cover"): least-cropped landscape art first, the portrait
-# grid cover next (cropped to its middle band), very-wide hero last. Each is
-# looked up both flat ("<appid>_<name>") and in the per-appid subfolder
-# ("<appid>/<name>"). Real cover art is always preferred over the tiny icon so a
-# game never falls back to a small logo/square when a proper cover is cached.
+# Landscape banner art, sharpest/closest-fit first — every game gets the same
+# wide look. Portrait grid covers (library_600x900) are excluded so tiles are
+# uniform. Each name is looked up both flat ("<appid>_<name>") and in the
+# per-appid subfolder ("<appid>/<name>").
 _STEAM_ART_NAMES = (
-    "capsule_616x353.jpg",   # ~1.75:1 — closest to the tile, minimal crop
-    "header.jpg",            # ~2.14:1 — classic store banner
-    "library_600x900.jpg",   # portrait grid cover, cropped to the middle band
+    "capsule_616x353.jpg",   # 616x353 (~1.75:1) — sharp and closest to the tile
+    "header.jpg",            # 460x215 (~2.14:1) — classic store banner
     "library_hero.jpg",      # very wide key art
     "capsule_231x87.jpg",
 )
+_STEAM_PORTRAIT_HINTS = ("600x900", "library_600x900", "portrait")
+# Steam's public CDN. Two mirrors for reliability; capsule preferred over the
+# lower-res header. Used when a game has no landscape banner cached locally so
+# every tile still gets the same wide, sharp banner.
+_STEAM_CDN_HOSTS = ("cdn.cloudflare.steamstatic.com", "cdn.akamai.steamstatic.com")
+_STEAM_CDN_ART = ("capsule_616x353.jpg", "header.jpg")
 
 
-def _steam_icon(root: str, appid: str) -> tuple[str | None, str]:
-    """Return (image_path, fit) for a Steam game. Handles both the old flat
-    librarycache naming and the newer per-appid subfolder layout.
+def _http_get(url: str, timeout: int = 8) -> bytes | None:
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, headers={"User-Agent": "Centurio"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if getattr(resp, "status", 200) != 200:
+                return None
+            return resp.read()
+    except Exception:
+        return None
 
-    Prefers real cover/header art (fit="cover" — fills the tile, cropping the
-    overflow) and only falls back to the tiny 32px icon (fit="contain") when no
-    cover art is cached at all. A `logo.png` (usually a transparent title
-    graphic) is never chosen as the cover — that produced the "tiny logo on
-    black" look for games like Valheim."""
+
+def _steam_cdn_art(appid: str, icon_cache: str | None) -> str | None:
+    """Download the game's landscape banner (capsule, falling back to header)
+    from Steam's CDN into the icon cache (once; cached thereafter). Returns the
+    local path, or None on any failure (offline, unknown appid, etc.) so callers
+    can fall back gracefully."""
+    if not icon_cache:
+        return None
+    out = os.path.join(icon_cache, f"steam_{appid}_capsule.jpg")
+    if os.path.exists(out):
+        return out
+    for name in _STEAM_CDN_ART:
+        for host in _STEAM_CDN_HOSTS:
+            data = _http_get(f"https://{host}/steam/apps/{appid}/{name}")
+            if data and len(data) >= 1024:  # tiny responses are error pages
+                try:
+                    os.makedirs(icon_cache, exist_ok=True)
+                    with open(out, "wb") as fh:
+                        fh.write(data)
+                    return out
+                except OSError:
+                    return None
+    return None
+
+
+def _steam_logo(cache: str, sub: str, appid: str) -> str | None:
+    """The game's title logo (a transparent PNG of the game's name/emblem).
+    Used as a composed cover when there is no banner — shown prominently on a
+    gradient rather than force-fitted, so a game like Valheim reads as a proper
+    cover instead of a tiny square."""
+    for p in (os.path.join(cache, f"{appid}_logo.png"), os.path.join(sub, "logo.png")):
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _steam_icon(root: str, appid: str, icon_cache: str | None = None) -> tuple[str | None, str]:
+    """Return (image_path, fit) for a Steam game, best cover first:
+
+      1. A local landscape banner (capsule/header/hero) — fit="cover".
+      2. A landscape image from the older hashed subfolder layout — "cover".
+      3. The banner downloaded from Steam's CDN — "cover".
+      4. The game's title logo, shown as a composed cover — fit="logo".
+      5. The tiny 32px icon — fit="contain".
+
+    Portrait grid covers are never used, so every tile has the same wide look;
+    the logo tier means even a game with no banner still gets a real cover
+    (offline-safe), and the tiny icon is only a last resort."""
     cache = os.path.join(root, "appcache", "librarycache")
     sub = os.path.join(cache, str(appid))
-    # Named art, best fit first, flat layout and per-appid subfolder alike.
+    # 1. Local landscape banner, flat layout and per-appid subfolder alike.
     for name in _STEAM_ART_NAMES:
         for p in (os.path.join(cache, f"{appid}_{name}"), os.path.join(sub, name)):
             if os.path.exists(p):
                 return p, "cover"
-    # Older subfolder layout uses hashed filenames: take the largest image that
-    # isn't an icon or logo (i.e. real cover art), cropped to fill.
+    # 2. Older subfolder layout uses hashed filenames: largest landscape image
+    #    (not an icon, logo or portrait cover).
     if os.path.isdir(sub):
         imgs = glob.glob(os.path.join(sub, "*.jpg")) + glob.glob(os.path.join(sub, "*.png"))
-        art = [p for p in imgs if os.path.isfile(p)
-               and not any(k in os.path.basename(p).lower() for k in ("icon", "logo"))]
+        art = [p for p in imgs if os.path.isfile(p) and not any(
+            k in os.path.basename(p).lower()
+            for k in ("icon", "logo", *_STEAM_PORTRAIT_HINTS))]
         if art:
             return max(art, key=lambda p: os.path.getsize(p)), "cover"
-    # Last resort: the small flat square icon, centered on a neutral cover.
+    # 3. Fetch the banner from Steam's CDN.
+    dl = _steam_cdn_art(appid, icon_cache)
+    if dl:
+        return dl, "cover"
+    # 4. Compose a cover from the title logo (no network needed).
+    logo = _steam_logo(cache, sub, appid)
+    if logo:
+        return logo, "logo"
+    # 5. Last resort: the small flat square icon, centered on a neutral cover.
     icon = os.path.join(cache, f"{appid}_icon.jpg")
     if os.path.exists(icon):
         return icon, "contain"
@@ -500,7 +562,7 @@ def _steam_games(icon_cache: str | None) -> list[dict]:
                 if any(s in name.lower() for s in _STEAM_SKIP_NAME):
                     continue
                 seen.add(appid)
-                icon, fit = _steam_icon(root, appid)
+                icon, fit = _steam_icon(root, appid, icon_cache)
                 games.append({"name": name, "path": f"steam://rungameid/{appid}",
                               "icon": icon, "icon_fit": fit, "source": "steam", "sub": "Steam"})
     return games
@@ -569,10 +631,12 @@ def resolve_icon_for(path: str, icon_cache: str | None = None) -> tuple[str | No
     if m:
         appid = m.group(1)
         for root in _steam_roots():
-            icon, fit = _steam_icon(root, appid)
+            icon, fit = _steam_icon(root, appid, icon_cache)
             if icon:
                 return icon, fit
-        return None, "contain"
+        # No Steam root found but we can still fetch the banner from the CDN.
+        dl = _steam_cdn_art(appid, icon_cache)
+        return (dl, "cover") if dl else (None, "contain")
     try:
         if os.name == "nt" and path.lower().endswith(".exe") and os.path.exists(path):
             return _win_extract_one(path, icon_cache), "contain"
@@ -587,7 +651,7 @@ def resolve_icon_for(path: str, icon_cache: str | None = None) -> tuple[str | No
 # already stored by an older version (e.g. higher-res .exe extraction, better
 # Steam art selection). backfill_icons(refresh=True) re-resolves once and the
 # caller records the new schema so it doesn't run again.
-ICON_SCHEMA = 3
+ICON_SCHEMA = 6
 
 
 def backfill_icons(store, icon_cache: str | None = None, refresh: bool = False) -> bool:
