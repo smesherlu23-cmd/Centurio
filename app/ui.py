@@ -30,6 +30,11 @@ class CenturioUI:
         s = store.state()["settings"]
         self.filter = self._valid_filter(s.get("view_filter") or "all")
         self.query = ""
+        # The "bar" (filters/recents/footer panel) is now independent of the
+        # selected category/filter — it's a floating panel toggled by the rail
+        # button, openable while browsing any category. Runtime-only (not
+        # persisted): every launch starts with it closed.
+        self.sidebar_open = False
         self.sort = s.get("view_sort") if s.get("view_sort") in ("alpha", "recent", "added") else "alpha"
         self.mode = s.get("view_mode") if s.get("view_mode") in ("grid", "list") else "grid"
         # Keyboard-navigation cursor (index into the flat list of visible apps).
@@ -96,9 +101,10 @@ class CenturioUI:
 
     def refresh(self):
         self.rail_container.content = self._build_rail()
-        # The sidebar ("Показать" menu) belongs to the all-apps view; a specific
-        # category shows just its apps with no sidebar.
-        show_sidebar = self._is_all_view()
+        # The bar ("Показать" panel) is a standalone toggle now — independent
+        # of which category/filter is currently selected — so it can be
+        # opened while browsing any category.
+        show_sidebar = self.sidebar_open
         self.sidebar_container.visible = show_sidebar
         self.sidebar_container.content = self._build_sidebar() if show_sidebar else None
         self.content_col.controls = self._build_content()
@@ -277,14 +283,21 @@ class CenturioUI:
                       spacing=0)
 
     def _is_all_view(self):
-        # The "all applications" view family (grid rail item): all + its filters.
+        # The "all applications" view family (main-menu rail item): all + its filters.
         return not self.filter.startswith("category:")
 
     def _build_rail(self):
         all_active = self._is_all_view()
         items = [
+            # Toggles the floating bar panel (filters/recents/footer) — works
+            # from any category, independent of the selected filter.
+            self._rail_item(ft.Icon(ft.Icons.VIEW_SIDEBAR, size=19,
+                                    color=C.TEXT if self.sidebar_open else C.MUTED),
+                            self.sidebar_open, lambda: self._toggle_sidebar(), "Показать/скрыть панель"),
+            # "Главное меню" — the system, non-editable pseudo-category that
+            # shows every category's apps together (formerly "Все приложения").
             self._rail_item(ft.Icon(ft.Icons.GRID_VIEW, size=19, color=C.TEXT if all_active else C.MUTED),
-                            all_active, lambda: self._set_filter("all"), "Все приложения"),
+                            all_active, lambda: self._set_filter("all"), "Главное меню"),
         ]
         for cat in self.categories():
             active = self.filter == f"category:{cat['id']}"
@@ -301,10 +314,7 @@ class CenturioUI:
         settings = ft.Container(ft.Icon(ft.Icons.SETTINGS, size=18, color=C.MUTED),
                                 width=44, height=44, border_radius=22, alignment=ft.alignment.center,
                                 on_click=lambda e: self._open_settings(), tooltip="Настройки")
-        avatar = ft.Container(T("АК", size=12, weight=ft.FontWeight.BOLD, color=C.TEXT),
-                              width=36, height=36, border_radius=18, bgcolor="#2a2a30",
-                              alignment=ft.alignment.center, tooltip="Аккаунт")
-        items += [add, ft.Container(height=6), settings, ft.Container(height=8), avatar]
+        items += [add, ft.Container(height=6), settings]
         return ft.Container(
             ft.Column(items, spacing=9, horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                       expand=True),
@@ -346,9 +356,8 @@ class CenturioUI:
             ft.Divider(height=1, color=C.LINE_2),
             ft.Container(T("ПОКАЗАТЬ", size=10.5, weight=ft.FontWeight.W_600,
                                  color=C.MUTED_2), padding=ft.padding.only(10, 0, 0, 8)),
-            self._sidebar_filter(ft.Icon(ft.Icons.GRID_VIEW, size=16,
-                                         color=self._accent() if self.filter == "all" else C.MUTED),
-                                 "Все приложения", len(apps), "all"),
+            # "Все приложения" moved out of the bar — it's now the dedicated
+            # "Главное меню" rail button (the system all-apps pseudo-category).
             self._sidebar_filter(ft.Icon(ft.Icons.STAR_BORDER, size=16, color=C.MUTED),
                                  "Избранное", fav, "favorites"),
             self._sidebar_filter(ft.Icon(ft.Icons.SCHEDULE, size=16, color=C.MUTED),
@@ -495,10 +504,9 @@ class CenturioUI:
         settings = self.state()["settings"]
 
         if is_all:
-            launched = sorted([a for a in apps if a.get("last_launched")],
-                              key=lambda a: a["last_launched"], reverse=True)
-            if launched:
-                controls.append(self._hero(launched[0]))
+            # Placeholder — hero card functionality removed for now; the slot
+            # stays put regardless of state (nothing to launch/hide it).
+            controls.append(self._hero())
 
         if is_all and settings.get("show_quick_row"):
             quick = [a for a in apps if a.get("quick")]
@@ -570,39 +578,12 @@ class CenturioUI:
             return sorted(apps, key=lambda a: (a.get("order", 0), a.get("added_at", 0)))
         return apps
 
-    def _hero(self, a):
-        running = a["id"] in self.running
-        eyebrow = "ПРОДОЛЖИТЬ · ОТКРЫТО СЕЙЧАС" if running else "ПРОДОЛЖИТЬ · НЕДАВНО ОТКРЫТО"
-        content = ft.Column([
-            ft.Row([ft.Container(width=6, height=6, border_radius=3, bgcolor=C.GREEN),
-                    T(eyebrow, size=11, weight=ft.FontWeight.W_600, color="#8a8a92")], spacing=8),
-            T(a["name"], size=29, weight=ft.FontWeight.BOLD, color=C.TEXT),
-            T(a.get("sub") or "Быстрый доступ к последнему запущенному приложению.",
-                    size=13.5, color=C.MUTED, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
-            ft.Container(height=6),
-            ft.Row([
-                ft.Container(ft.Row([ft.Icon(ft.Icons.PLAY_ARROW, size=16, color=C.BG_1),
-                                     T("Открыть", size=13.5, weight=ft.FontWeight.W_600, color=C.BG_1)],
-                                    spacing=8, tight=True),
-                             height=40, padding=ft.padding.symmetric(0, 22), bgcolor=self._accent(),
-                             border_radius=10, on_click=lambda e: self._launch(a["id"]),
-                             alignment=ft.alignment.center),
-                ft.Container(T("Показать в папке", size=13, weight=ft.FontWeight.W_600, color=C.TEXT),
-                             height=40, padding=ft.padding.symmetric(0, 18),
-                             border=ft.border.all(1, C.LINE_4), border_radius=10,
-                             on_click=lambda e: self._show_in_folder(a["id"]), alignment=ft.alignment.center),
-                T(f"запущено {time_ago(a['last_launched'])}" if a.get("last_launched") else "",
-                        size=12, color=C.MUTED_2, font_family="monospace"),
-            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        ], spacing=6, tight=True)
-        ghost = ft.Container(T(initials(a["name"]), size=150, weight=ft.FontWeight.BOLD,
-                                     color="#161619"), alignment=ft.alignment.center_right,
-                             expand=True, padding=ft.padding.only(0, 0, 20, 0))
+    def _hero(self):
+        # Placeholder slot — functionality stripped for now (was the
+        # "Продолжить" card). Kept as an empty box that's always rendered.
         return ft.Container(
-            ft.Stack([ghost, ft.Container(content, alignment=ft.alignment.center_left)], expand=True),
             bgcolor=C.PANEL, border=ft.border.all(1, C.LINE), border_radius=14,
-            padding=ft.padding.symmetric(26, 30), height=170,
-            margin=ft.margin.only(0, 6, 0, 20), clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            height=170, margin=ft.margin.only(0, 6, 0, 20),
         )
 
     def _quick_row(self, quick):
@@ -861,6 +842,12 @@ class CenturioUI:
         return p.replace("\\", "/").rstrip("/").split("/")[-1]
 
     # ---------- actions ----------
+    def _toggle_sidebar(self):
+        """Open/close the floating bar panel — independent of the current
+        category/filter, so it can be toggled while browsing anything."""
+        self.sidebar_open = not self.sidebar_open
+        self.refresh()
+
     def _set_filter(self, f):
         self.filter = f
         self.query = ""
@@ -987,6 +974,11 @@ class CenturioUI:
         self.refresh()
 
     def _on_library_changed(self):
+        # A category can be deleted while it's the active filter (or renamed/
+        # recolored elsewhere); make sure we're never pointed at a filter that
+        # no longer resolves to anything, instead of showing a dead, empty view.
+        self.filter = self._valid_filter(self.filter)
+        self._persist_view()
         cb = self.controllers.get("on_library_changed")
         if cb:
             cb()

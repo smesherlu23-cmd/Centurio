@@ -555,10 +555,10 @@ def _open_detail_dialog(app_ui, existing):
     page.open(dialog)
 
 
-def _mini_btn(icon, on_click, color=None):
-    return ft.Container(ft.Icon(icon, size=15, color=color or C.MUTED_2),
+def _mini_btn(icon, on_click, color=None, disabled=False):
+    return ft.Container(ft.Icon(icon, size=15, color=C.MUTED_3 if disabled else (color or C.MUTED_2)),
                         width=26, height=26, border_radius=7, alignment=ft.alignment.center,
-                        on_click=lambda e: on_click())
+                        on_click=None if disabled else (lambda e: on_click()))
 
 
 def open_categories_dialog(app_ui):
@@ -572,16 +572,16 @@ def open_categories_dialog(app_ui):
         for idx, c in enumerate(cats):
             count = sum(1 for a in store.state()["apps"] if a.get("category_id") == c["id"])
             glyph = ft.Container(app_ui._cat_glyph(c, size=16), width=26, height=26,
-                                 alignment=ft.alignment.center)
+                                 border_radius=8, alignment=ft.alignment.center,
+                                 on_click=lambda e, cc=c: _open_category_editor(app_ui, cc, rebuild),
+                                 tooltip="Изменить цвет и иконку")
             list_col.controls.append(ft.Container(
-                ft.Row([glyph,
-                        T(c["name"], size=13, color=C.TEXT, weight=ft.FontWeight.W_500,
-                          expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                ft.Row([glyph, _inline_name_field(app_ui, c, rebuild),
                         T(str(count), size=11, color=C.MUTED_2, font_family="monospace"),
                         _mini_btn(ft.Icons.ARROW_UPWARD, lambda cid=c["id"]: move(cid, -1),
-                                  color=C.MUTED_3 if idx == 0 else C.MUTED_2),
+                                  disabled=idx == 0),
                         _mini_btn(ft.Icons.ARROW_DOWNWARD, lambda cid=c["id"]: move(cid, 1),
-                                  color=C.MUTED_3 if idx == len(cats) - 1 else C.MUTED_2),
+                                  disabled=idx == len(cats) - 1),
                         _mini_btn(ft.Icons.TUNE, lambda cc=c: _open_category_editor(app_ui, cc, rebuild)),
                         _mini_btn(ft.Icons.DELETE_OUTLINE, lambda cid=c["id"]: remove_cat(cid))],
                        spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -596,6 +596,9 @@ def open_categories_dialog(app_ui):
         app_ui._on_library_changed()
 
     def remove_cat(cid):
+        if len(app_ui.categories()) <= 1:
+            app_ui._toast("Нельзя удалить последнюю категорию", error=True)
+            return
         cat = next((c for c in app_ui.categories() if c["id"] == cid), None)
         cnt = sum(1 for a in store.state()["apps"] if a.get("category_id") == cid)
         msg = (f"Категория «{cat['name'] if cat else ''}» будет удалена."
@@ -608,6 +611,7 @@ def open_categories_dialog(app_ui):
         confirm(app_ui, "Удалить категорию?", msg, "Удалить", do)
 
     new_field = _text_input("", "Название категории")
+    new_field.autofocus = True
 
     def add_cat():
         name = new_field.value.strip()
@@ -617,6 +621,7 @@ def open_categories_dialog(app_ui):
         # derived from the name until the user picks one.
         store.add_category(name)
         new_field.value = ""
+        new_field.focus()
         new_field.update()
         rebuild()
         app_ui._on_library_changed()
@@ -625,8 +630,9 @@ def open_categories_dialog(app_ui):
     rebuild()
 
     body = ft.Column([
-        T("Группируйте приложения по смыслу. Стрелки меняют порядок, "
-          "значок «настройки» — цвет и иконку.", size=12.5, color=C.MUTED_2),
+        T("Группируйте приложения по смыслу. Название можно править прямо в списке, "
+          "стрелки меняют порядок, значок или «настройки» — цвет и иконку.",
+          size=12.5, color=C.MUTED_2),
         ft.Container(height=6), list_col, ft.Container(height=6),
         _field_label("Новая категория"),
         ft.Row([new_field, _outline_btn("Добавить", ft.Icons.ADD, add_cat)], spacing=8,
@@ -643,6 +649,31 @@ def open_categories_dialog(app_ui):
     page.open(dialog)
 
 
+def _inline_name_field(app_ui, cat, rebuild):
+    """Rename a category directly in the list — no need to open the full
+    editor just to fix a typo. Commits on Enter or on losing focus."""
+    store = app_ui.store
+    tf = ft.TextField(
+        value=cat["name"], expand=True, height=32, text_size=13, color=C.TEXT,
+        bgcolor="transparent", border_color="transparent", focused_border_color=C.LINE_5,
+        content_padding=ft.padding.symmetric(4, 8), cursor_color=C.TEXT,
+    )
+
+    def commit(e):
+        name = (tf.value or "").strip()
+        if name and name != cat["name"]:
+            store.update_category(cat["id"], {"name": name})
+            app_ui._on_library_changed()
+            rebuild()
+        elif not name:
+            tf.value = cat["name"]
+            tf.update()
+
+    tf.on_blur = commit
+    tf.on_submit = commit
+    return tf
+
+
 def _open_category_editor(app_ui, cat, on_done):
     """Edit a category's name, icon colour (RGB / hex) and icon (first letter
     or a pick from the icon pack)."""
@@ -651,11 +682,31 @@ def _open_category_editor(app_ui, cat, on_done):
     draft = {"name": cat["name"], "color": C.category_color(cat), "icon": cat.get("icon")}
 
     name_in = _text_input(draft["name"], "Название категории")
-    name_in.on_change = lambda e: draft.__setitem__("name", e.control.value)
 
     # ---- colour: preview + RGB sliders + hex field ----
-    preview = ft.Container(width=44, height=44, border_radius=11, bgcolor=draft["color"],
+    def _chip_glyph():
+        if draft["icon"]:
+            return ft.Icon(cat_icon(draft["icon"]), size=20, color=draft["color"])
+        return T(initials(draft["name"]) or "?", size=17, weight=ft.FontWeight.BOLD, color=draft["color"])
+
+    # A live, realistic preview (matches how the chip renders in the rail/
+    # sidebar) instead of a flat colour swatch — updates as you type or pick.
+    preview = ft.Container(_chip_glyph(), width=44, height=44, border_radius=14,
+                           bgcolor=C.PANEL_2, alignment=ft.alignment.center,
                            border=ft.border.all(1, C.LINE_4))
+
+    def _refresh_preview():
+        preview.content = _chip_glyph()
+        if preview.page:
+            preview.update()
+
+    def on_name(e):
+        draft["name"] = e.control.value
+        if not draft["icon"]:
+            _refresh_preview()
+    name_in.on_change = on_name
+    name_in.on_submit = lambda e: save()
+
     r0, g0, b0 = C.hex_to_rgb(draft["color"])
     hex_in = ft.TextField(value=draft["color"], hint_text="#RRGGBB", width=120,
                           bgcolor=C.BG_1, border_color=C.LINE, focused_border_color=C.LINE_5,
@@ -665,9 +716,7 @@ def _open_category_editor(app_ui, cat, on_done):
 
     def apply_color(hexval, from_hex=False):
         draft["color"] = hexval
-        preview.bgcolor = hexval
-        if preview.page:
-            preview.update()
+        _refresh_preview()
         if not from_hex:
             hex_in.value = hexval
             if hex_in.page:
@@ -721,7 +770,7 @@ def _open_category_editor(app_ui, cat, on_done):
                             border=ft.border.all(2 if selected else 1,
                                                  app_ui._accent() if selected else C.LINE),
                             tooltip="Первая буква" if name is None else name,
-                            on_click=lambda e, n=name: (draft.__setitem__("icon", n), render_icons()))
+                            on_click=lambda e, n=name: (draft.__setitem__("icon", n), render_icons(), _refresh_preview()))
 
     render_icons()
 
