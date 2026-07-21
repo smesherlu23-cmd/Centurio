@@ -41,6 +41,10 @@ def test_store():
         ok(s.get_app(a["id"])["favorite"] is True, "favorite toggled")
         ok(s.get_app(a["id"])["sub"] == "Редактор", "sub updated")
 
+        ok(a.get("track_exe") is None, "track_exe defaults to None")
+        s.update_app(a["id"], {"track_exe": "code.exe"})
+        ok(s.get_app(a["id"])["track_exe"] == "code.exe", "track_exe updated")
+
         s.mark_launched(a["id"])
         ok(s.get_app(a["id"])["launch_count"] == 1, "launch_count incremented")
         ok(s.get_app(a["id"])["last_launched"] > 0, "last_launched set")
@@ -115,11 +119,38 @@ def test_discovery():
         discovery._steam_roots = lambda: [d]
         games = discovery._steam_games(None)
         ok(games and games[0]["sub"] == "Steam", "steam games carry sub='Steam'")
+        ok(games and "track_exe" in games[0], "steam games carry a track_exe field")
 
-    # _dedupe must preserve the "sub" field (it silently dropped it before).
+    # _dedupe must preserve the "sub" and "track_exe" fields (both are needed
+    # downstream — the process name drives the honest "Запущено" status).
     deduped = discovery._dedupe([{"name": "CS2", "path": "steam://rungameid/730",
-                                  "sub": "Steam", "source": "steam"}])
+                                  "sub": "Steam", "source": "steam", "track_exe": "cs2.exe"}])
     ok(deduped[0]["sub"] == "Steam", "_dedupe preserves sub field")
+    ok(deduped[0]["track_exe"] == "cs2.exe", "_dedupe preserves track_exe field")
+
+    # _steam_game_exe picks the game's main .exe (for the running indicator):
+    # a name-matching exe wins, redistributables/uninstallers are ignored, and
+    # the largest remaining exe is the fallback.
+    with tempfile.TemporaryDirectory() as d:
+        gdir = os.path.join(d, "steamapps", "common", "Portal")
+        os.makedirs(gdir)
+        # A smaller name-matching exe must beat a bigger unrelated (but non-junk)
+        # exe, and junk (redistributables/uninstallers) is ignored entirely.
+        for fn, size in [("portal.exe", 500), ("bigtool.exe", 9000),
+                         ("vcredist_x64.exe", 8000), ("crashhandler.exe", 100)]:
+            with open(os.path.join(gdir, fn), "wb") as fh:
+                fh.write(b"\0" * size)
+        ok(discovery._steam_game_exe(d, "Portal", "Portal") == "portal.exe",
+           "steam exe: name-matching exe chosen over bigger unrelated exe")
+    with tempfile.TemporaryDirectory() as d:
+        gdir = os.path.join(d, "steamapps", "common", "Mystery")
+        os.makedirs(gdir)
+        for fn, size in [("game.exe", 7000), ("unins000.exe", 9000), ("tiny.exe", 10)]:
+            with open(os.path.join(gdir, fn), "wb") as fh:
+                fh.write(b"\0" * size)
+        ok(discovery._steam_game_exe(d, "Mystery", "Mystery") == "game.exe",
+           "steam exe: largest non-junk exe is the fallback")
+    ok(discovery._steam_game_exe("/x", None, "n") is None, "steam exe: no installdir -> None")
 
     # PowerShell templates: balanced braces / here-strings after substitution
     # (can't execute PowerShell on this platform, but a structural check
@@ -170,6 +201,14 @@ def test_launcher_index():
     keys = set(lch._exe_index)
     ok("chrome.exe" in keys and "vim" in keys, "exe index built")
     ok(all("steam" not in k for k in keys), "URL launchers excluded from index")
+
+    # A URL-launched game (no exe in its path) is tracked by track_exe so its
+    # "running" state is honest — the whole point of process-name detection.
+    lch.set_apps([{"id": "g", "path": "steam://rungameid/730", "track_exe": "cs2.exe"},
+                  {"id": "h", "path": "C:/x/Chrome.exe", "track_exe": None}])
+    idx = lch._exe_index
+    ok(idx.get("cs2.exe") == {"g"}, "URL game indexed by track_exe")
+    ok(idx.get("chrome.exe") == {"h"}, "file app still indexed by path basename")
 
 
 def test_ui_build():

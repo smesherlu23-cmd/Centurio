@@ -70,7 +70,7 @@ def _dedupe(apps: list[dict]) -> list[dict]:
         if key not in seen:
             seen[key] = {"name": name, "path": path, "icon": a.get("icon"),
                          "icon_fit": a.get("icon_fit", "contain"), "source": a.get("source", ""),
-                         "sub": a.get("sub", "")}
+                         "sub": a.get("sub", ""), "track_exe": a.get("track_exe")}
         elif not seen[key].get("icon") and a.get("icon"):
             seen[key]["icon"] = a.get("icon")
             seen[key]["icon_fit"] = a.get("icon_fit", "contain")
@@ -396,6 +396,77 @@ def _macos_icon(app_path: str, icon_cache: str | None) -> str | None:
 _STEAM_SKIP_ID = {"228980"}  # Steamworks Common Redistributables
 _STEAM_SKIP_NAME = ("steamworks common", "proton", "steam linux runtime", "steamvr media")
 
+# Executables that live inside a game folder but aren't the game itself — never
+# pick these as the process to watch for the "Запущено" indicator.
+_STEAM_EXE_JUNK = ("unins", "uninstall", "vcredist", "vc_redist", "dxsetup", "dxwebsetup",
+                   "directx", "redist", "crashhandler", "crashreport", "launcher", "setup",
+                   "cleanup", "touchup", "dotnet", "oalinst", "notification_helper",
+                   "prereq", "activation", "diagnostic", "helper", "reporter")
+
+
+def _steam_game_exe(lib: str, installdir: str | None, name: str) -> str | None:
+    """Best-effort main-executable basename for a Steam game.
+
+    Steam launches games via ``steam://`` (no PID for us to watch), so to show
+    an honest "Запущено" status we match the running process name instead. The
+    ACF doesn't record the exe, so we scan the install folder for the most
+    plausible one: prefer an .exe whose name resembles the game's, else the
+    largest non-junk .exe. Callers gate this to Windows — under Proton/native
+    Linux the process names are unreliable, so the user sets one by hand.
+    """
+    if not installdir:
+        return None
+    root = os.path.join(lib, "steamapps", "common", installdir)
+    if not os.path.isdir(root):
+        return None
+    candidates: list[tuple[int, str, str]] = []
+    seen = 0
+    for dirpath, _dirs, files in os.walk(root):
+        for fn in files:
+            if not fn.lower().endswith(".exe"):
+                continue
+            seen += 1
+            if seen > 20000:      # pathological install tree — stop scanning
+                break
+            low = fn.lower()
+            if any(j in low for j in _STEAM_EXE_JUNK):
+                continue
+            try:
+                size = os.path.getsize(os.path.join(dirpath, fn))
+            except OSError:
+                continue
+            candidates.append((size, fn, low))
+        if seen > 20000:
+            break
+    if not candidates:
+        return None
+    tokens = [t for t in re.split(r"[^a-z0-9]+", name.lower()) if len(t) >= 3]
+    for _size, fn, low in sorted(candidates, key=lambda c: -c[0]):
+        if any(t in low for t in tokens):
+            return fn
+    return max(candidates, key=lambda c: c[0])[1]
+
+
+def steam_exe_for(path: str) -> str | None:
+    """Resolve the watch process name for an already-stored ``steam://`` app
+    (used to backfill games added before process-tracking existed)."""
+    m = re.match(r"steam://rungameid/(\d+)", path or "")
+    if not m or os.name != "nt":
+        return None
+    appid = m.group(1)
+    for root in _steam_roots():
+        for lib in _steam_libraries(root):
+            acf = os.path.join(lib, "steamapps", f"appmanifest_{appid}.acf")
+            try:
+                with open(acf, encoding="utf-8", errors="ignore") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            exe = _steam_game_exe(lib, _vdf_val(text, "installdir"), _vdf_val(text, "name") or "")
+            if exe:
+                return exe
+    return None
+
 
 def _steam_roots() -> list[str]:
     roots = []
@@ -563,8 +634,11 @@ def _steam_games(icon_cache: str | None) -> list[dict]:
                     continue
                 seen.add(appid)
                 icon, fit = _steam_icon(root, appid, icon_cache)
+                track = (_steam_game_exe(lib, _vdf_val(text, "installdir"), name)
+                         if os.name == "nt" else None)
                 games.append({"name": name, "path": f"steam://rungameid/{appid}",
-                              "icon": icon, "icon_fit": fit, "source": "steam", "sub": "Steam"})
+                              "icon": icon, "icon_fit": fit, "source": "steam",
+                              "sub": "Steam", "track_exe": track})
     return games
 
 
@@ -599,12 +673,16 @@ def _epic_games(icon_cache: str | None) -> list[dict]:
             continue
         icon = None
         loc, exe = d.get("InstallLocation"), d.get("LaunchExecutable")
+        # The manifest names the launch exe outright — watch it for "Запущено"
+        # (Epic, like Steam, launches via a URL scheme, so there's no PID).
+        track = os.path.basename(exe) if exe else None
         if icon_cache and loc and exe:
             full = os.path.join(loc, exe)
             if os.path.exists(full):
                 icon = _win_extract_one(full, icon_cache)
         games.append({"name": name, "path": path, "icon": icon,
-                      "icon_fit": "contain", "source": "epic", "sub": "Epic Games"})
+                      "icon_fit": "contain", "source": "epic", "sub": "Epic Games",
+                      "track_exe": track})
     return games
 
 
@@ -677,6 +755,12 @@ def backfill_icons(store, icon_cache: str | None = None, refresh: bool = False) 
                 patch["sub"] = "Steam"
             elif path.startswith("com.epicgames.launcher://"):
                 patch["sub"] = "Epic Games"
+        # Fill the watch process name for games added before process-tracking
+        # existed, so their "Запущено" status becomes honest too.
+        if path.startswith("steam://") and not (app.get("track_exe") or "").strip():
+            exe = steam_exe_for(path)
+            if exe:
+                patch["track_exe"] = exe
         if patch:
             store.update_app(app["id"], patch)
             changed = True

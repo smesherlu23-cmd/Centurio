@@ -110,6 +110,10 @@ class Store:
             "favorite": bool(app.get("favorite")),
             "quick": bool(app.get("quick")),
             "hotkey": app.get("hotkey") or None,
+            # Process/executable name used to detect the "Запущено" state for
+            # apps we don't launch directly (Steam/Epic games run via a URL
+            # scheme, so there's no PID to watch — we match the process name).
+            "track_exe": app.get("track_exe") or None,
             "last_launched": 0,
             "launch_count": 0,
             "added_at": int(time.time() * 1000),
@@ -125,7 +129,7 @@ class Store:
         app = self.get_app(app_id)
         if not app:
             return None
-        for key in ("name", "path", "args", "sub", "category_id", "hue", "icon", "icon_fit", "favorite", "quick", "hotkey"):
+        for key in ("name", "path", "args", "sub", "category_id", "hue", "icon", "icon_fit", "favorite", "quick", "hotkey", "track_exe"):
             if key in patch:
                 app[key] = patch[key]
         self._persist()

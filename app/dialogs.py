@@ -178,6 +178,7 @@ def open_add_picker(app_ui):
             return
         store.add_app({"name": a["name"], "path": path, "icon": a.get("icon"),
                        "icon_fit": a.get("icon_fit"), "sub": a.get("sub", ""),
+                       "track_exe": a.get("track_exe"),
                        "category_id": ui_state["category_id"]})
         existing_paths.add(path.lower())
         app_ui._on_library_changed()
@@ -322,6 +323,7 @@ def _open_detail_dialog(app_ui, existing):
     path_in = _text_input(draft["path"], "Путь к файлу приложения")
     sub_in = _text_input(draft["sub"], "Короткое описание (необязательно)")
     hotkey_in = _text_input(draft.get("hotkey") or "", "Например, Ctrl+Shift+G")
+    track_in = _text_input(draft.get("track_exe") or "", "Например, game.exe")
 
     def on_name(e):
         draft["name"] = e.control.value
@@ -339,6 +341,10 @@ def _open_detail_dialog(app_ui, existing):
     def on_hotkey(e):
         draft["hotkey"] = e.control.value.strip() or None
     hotkey_in.on_change = on_hotkey
+
+    def on_track(e):
+        draft["track_exe"] = e.control.value.strip() or None
+    track_in.on_change = on_track
 
     cat_dd = ft.Dropdown(
         value=draft["category_id"], bgcolor=C.BG_1, border_color=C.LINE,
@@ -407,7 +413,8 @@ def _open_detail_dialog(app_ui, existing):
             return
         if is_edit:
             store.update_app(existing["id"], {k: draft.get(k) for k in
-                             ("name", "path", "sub", "category_id", "hue", "favorite", "quick", "hotkey")})
+                             ("name", "path", "sub", "category_id", "hue", "favorite", "quick",
+                              "hotkey", "track_exe")})
         else:
             store.add_app(draft)
         page.close(dialog)
@@ -436,6 +443,9 @@ def _open_detail_dialog(app_ui, existing):
         ft.Container(height=6), _field_label("Цвет плитки"),
         ft.Row([preview, hue_slider], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=6), _field_label("Горячая клавиша (глобальная)"), hotkey_in,
+        ft.Container(height=6), _field_label("Процесс для статуса «Запущено»"), track_in,
+        T("Имя exe запущенного приложения — для игр Steam/Epic и программ, запущенных вне Centurio.",
+          size=10.5, color=C.MUTED_2),
         check_row("В избранное", "Показывать в разделе «Избранное»", fav_sw),
         check_row("Быстрый запуск", "Закрепить сверху; без своей клавиши — Ctrl+1…9", quick_sw),
     ], spacing=6, tight=True, scroll=ft.ScrollMode.AUTO, width=460)

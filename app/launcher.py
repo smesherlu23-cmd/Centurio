@@ -49,15 +49,24 @@ class Launcher:
 
     # ---- process-name monitoring (optional, needs psutil) ----
     def set_apps(self, apps):
-        """Index apps by executable basename so already-running apps (launched
-        anywhere, not just by us) show as 'running'."""
+        """Index apps by the process name(s) that mean 'this app is running',
+        so already-running apps (launched anywhere, not just by us) show as
+        'running'. A URL launcher (Steam/Epic game) has no exe in its path, so
+        it's tracked purely by its explicit ``track_exe`` process name."""
         index: dict[str, set[str]] = {}
         for a in apps:
+            names: set[str] = set()
+            # Explicit process name — the only way to track URL-launched games.
+            track = (a.get("track_exe") or "").strip().lower()
+            if track:
+                names.add(track)
+            # A real file path also names its own process.
             path = a.get("path") or ""
-            if not path or "://" in path:   # skip URL launchers (Steam etc.)
-                continue
-            base = os.path.basename(path).lower()
-            if base.endswith((".exe", ".bat", ".cmd", ".com")) or os.name != "nt":
+            if path and "://" not in path:
+                base = os.path.basename(path).lower()
+                if base and (base.endswith((".exe", ".bat", ".cmd", ".com")) or os.name != "nt"):
+                    names.add(base)
+            for base in names:
                 index.setdefault(base, set()).add(a["id"])
         with self._lock:
             self._exe_index = index
