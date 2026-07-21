@@ -124,10 +124,10 @@ function Md5($s){ $m=[System.Security.Cryptography.MD5]::Create(); (($m.ComputeH
 function Save-Icon($exe){
   if(-not $cache){ return $null }
   if(-not (Test-Path -LiteralPath $exe)){ return $null }
-  $f=Join-Path $cache ((Md5 $exe)+'.png')
+  $f=Join-Path $cache ((Md5 $exe)+'_256.png')
   if(Test-Path -LiteralPath $f){ return $f }
   $bmp=$null
-  if($script:CentBig){ try{ $bmp=[CentIcon]::Get($exe,96) }catch{ $bmp=$null } }
+  if($script:CentBig){ try{ $bmp=[CentIcon]::Get($exe,256) }catch{ $bmp=$null } }
   if(-not $bmp){ try{ $ic=[System.Drawing.Icon]::ExtractAssociatedIcon($exe); if($ic){ $bmp=$ic.ToBitmap() } }catch{ $bmp=$null } }
   if($bmp){ try{ $bmp.Save($f,[System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose(); return $f }catch{} }
   return $null
@@ -436,29 +436,76 @@ def _vdf_val(text: str, key: str) -> str | None:
     return m.group(1) if m else None
 
 
+_COVER_ASPECT = 1 / 0.62  # tile width : cover height (see ui.py's _tile: cover_h = width * 0.62)
+_COVER_TOLERANCE = 0.15  # only crop-to-fill when aspect is within 15% of the tile's
+
+# Known pixel dimensions for Steam's standard flat-layout filenames, so the fit
+# (crop vs letterbox) can be decided without opening each file.
+_STEAM_FLAT_ART = (
+    ("_capsule_616x353.jpg", 616 / 353),
+    ("_header.jpg", 460 / 215),
+    ("_library_hero.jpg", 3840 / 1240),
+    ("_capsule_231x87.jpg", 231 / 87),
+    ("_library_600x900.jpg", 600 / 900),
+    ("_logo.png", None),
+)
+
+
+def _fit_for_aspect(aspect: float | None) -> str:
+    """'cover' (fill + crop) when the art's aspect ratio is close enough to the
+    tile's that cropping only trims a thin margin; 'contain' (letterbox, no
+    crop) otherwise — force-cropping a much wider/taller image to fill the
+    tile chops off a large, often meaningful, chunk of the art (e.g. a
+    widescreen header cropped hard on both sides, or a portrait cover reduced
+    to a sliver of background)."""
+    if aspect is None:
+        return "contain"
+    return "cover" if abs(aspect / _COVER_ASPECT - 1) <= _COVER_TOLERANCE else "contain"
+
+
+def _image_aspect(path: str) -> float | None:
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            w, h = im.size
+    except Exception:
+        return None
+    return (w / h) if w and h else None
+
+
 def _steam_icon(root: str, appid: str) -> tuple[str | None, str]:
     """Return (image_path, fit) for a Steam game. Handles both the old flat
     librarycache naming and the newer per-appid subfolder layout.
 
     Real cover/header art (which fills the whole tile) is always preferred over
     the tiny 32px `_icon.jpg`; the flat icon is only a last resort, because on a
-    big tile it renders as a small blurry square rather than proper game art."""
+    big tile it renders as a small blurry square rather than proper game art.
+
+    Among the real art, landscape-shaped images (header/capsule) are preferred
+    over the portrait `library_600x900` grid cover, and the fit (cover-and-crop
+    vs contain-and-letterbox) is chosen per image so a badly-mismatched aspect
+    ratio doesn't get force-cropped into losing most of the artwork."""
     cache = os.path.join(root, "appcache", "librarycache")
-    # Flat layout: cover-style art fills the whole tile — try these first.
-    for suffix in (f"{appid}_library_600x900.jpg", f"{appid}_header.jpg",
-                   f"{appid}_capsule_616x353.jpg", f"{appid}_capsule_231x87.jpg",
-                   f"{appid}_library_hero.jpg", f"{appid}_logo.png"):
-        p = os.path.join(cache, suffix)
+    # Flat layout: landscape art first — it fills a landscape tile with the
+    # least crop. library_600x900 (portrait) is last.
+    for suffix, aspect in _STEAM_FLAT_ART:
+        p = os.path.join(cache, f"{appid}{suffix}")
         if os.path.exists(p):
-            return p, "cover"
+            return p, _fit_for_aspect(aspect)
     # Newer layout: appcache/librarycache/<appid>/<hash>.(jpg|png). Prefer the
-    # largest non-icon art; only fall back to an icon-named file if that's all.
+    # non-icon art whose aspect ratio best fits the tile; fall back to the
+    # largest file if sizes can't be read.
     sub = os.path.join(cache, str(appid))
     if os.path.isdir(sub):
         imgs = glob.glob(os.path.join(sub, "*.jpg")) + glob.glob(os.path.join(sub, "*.png"))
         imgs = [p for p in imgs if os.path.isfile(p)]
         art = [p for p in imgs if "icon" not in os.path.basename(p).lower()]
         if art:
+            scored = [(p, _image_aspect(p)) for p in art]
+            scored = [(p, a) for p, a in scored if a is not None]
+            if scored:
+                best, aspect = min(scored, key=lambda t: abs(t[1] - _COVER_ASPECT))
+                return best, _fit_for_aspect(aspect)
             return max(art, key=lambda p: os.path.getsize(p)), "cover"
         if imgs:
             return max(imgs, key=lambda p: os.path.getsize(p)), "contain"
@@ -570,16 +617,29 @@ def resolve_icon_for(path: str, icon_cache: str | None = None) -> tuple[str | No
     return None, "contain"
 
 
-def backfill_icons(store, icon_cache: str | None = None) -> bool:
-    """Fill in icons and the "sub" label (e.g. "Steam") for apps added before
-    that metadata existed or before art was cached."""
+# Bump when the icon pipeline improves in a way that should refresh icons
+# already stored by an older version (e.g. higher-res .exe extraction, better
+# Steam art selection). backfill_icons(refresh=True) re-resolves once and the
+# caller records the new schema so it doesn't run again.
+ICON_SCHEMA = 2
+
+
+def backfill_icons(store, icon_cache: str | None = None, refresh: bool = False) -> bool:
+    """Fill in icons and the "sub" label (e.g. "Steam") for apps.
+
+    Normally only fills what's missing. With refresh=True it also RE-resolves
+    icons that are already present, so improvements to icon extraction / Steam
+    art selection reach apps that were added by an older version (whose stored
+    icon path may point at a low-res or worse-fitting image). A re-resolved
+    icon replaces the stored one only when resolution actually finds something
+    and it differs — a temporary failure never wipes a good existing icon."""
     changed = False
     for app in list(store.state().get("apps", [])):
         patch = {}
         path = app.get("path") or ""
-        if not app.get("icon"):
+        if refresh or not app.get("icon"):
             icon, fit = resolve_icon_for(path, icon_cache)
-            if icon:
+            if icon and (icon != app.get("icon") or fit != app.get("icon_fit")):
                 patch["icon"] = icon
                 patch["icon_fit"] = fit
         if not (app.get("sub") or "").strip():

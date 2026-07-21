@@ -28,6 +28,9 @@ DEFAULT_SETTINGS = {
     "accent": "#f5f5f7",
     "tile_size": "large",   # 'large' | 'compact'
     "show_quick_row": True,
+    # Internal (not user-facing): bumped when the icon pipeline improves, so a
+    # one-time re-resolution can refresh icons stored by an older version.
+    "icon_schema": 0,
 }
 
 CATEGORY_ICONS = ["work", "brush", "sports_esports", "code", "folder",

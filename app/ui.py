@@ -73,6 +73,45 @@ def icon_image(path, **kw) -> "ft.Image | None":
     return None
 
 
+_TILE_ASPECT = 1 / 0.62   # tile cover box aspect (see _tile: cover_h = width * 0.62)
+_ASPECT_TOL = 0.15        # crop-to-fill only when within 15% of the tile aspect
+_MIN_ART_PX = 160         # below this the image is a small icon, not cover art
+_IMG_SIZE_CACHE: dict[str, tuple[float, tuple[int, int] | None]] = {}
+
+
+def _is_launcher_art(a) -> bool:
+    """True for Steam/Epic entries, whose stored icon is real cover/header art
+    meant to fill a tile — as opposed to a plain app/exe icon."""
+    path = a.get("path") or ""
+    return path.startswith("steam://") or path.startswith("com.epicgames.launcher://")
+
+
+def _img_size(path) -> tuple[int, int] | None:
+    """(width, height) of a raster image (cached by mtime); None if it can't be
+    read or isn't a raster. Used to decide fit from the *actual* image rather
+    than trusting a possibly-stale stored icon_fit."""
+    if not path or not str(path).lower().endswith(_RASTER_EXT):
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    cached = _IMG_SIZE_CACHE.get(path)
+    if cached and cached[0] == st.st_mtime:
+        return cached[1]
+    size = None
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            w, h = im.size
+        if w and h:
+            size = (w, h)
+    except Exception:
+        size = None
+    _IMG_SIZE_CACHE[path] = (st.st_mtime, size)
+    return size
+
+
 def app_hue(a) -> int:
     h = a.get("hue")
     return h if isinstance(h, int) else hue_from_string(a.get("name") or "")
@@ -230,7 +269,9 @@ class CenturioUI:
     def _chip_visual(self, a, size, letter_size, radius):
         """Square icon for small contexts: real app icon if available, else a
         coloured letter chip. Works for stored apps and discovered dicts."""
-        fit = ft.ImageFit.COVER if a.get("icon_fit") == "cover" else ft.ImageFit.CONTAIN
+        # In a small square chip, launcher cover art reads best filling the
+        # square; a plain app icon is shown whole (contain).
+        fit = ft.ImageFit.COVER if _is_launcher_art(a) else ft.ImageFit.CONTAIN
         img = icon_image(a.get("icon"), width=size, height=size, fit=fit)
         if img:
             return ft.Container(
@@ -245,13 +286,27 @@ class CenturioUI:
                                        colors=[c1, c2]))
 
     def _cover_content(self, a, cover_h):
-        """The tile cover base container: game art fills it, an app icon sits
-        centred on a neutral cover, and iconless apps show a coloured letter."""
+        """The tile cover base container. The fit is decided from the *actual*
+        image, not the stored icon_fit (which may be stale):
+
+          * Large launcher art whose aspect ratio is close to the tile fills it
+            (cover, cropping only a thin margin).
+          * Large launcher art with a mismatched aspect is letterboxed across
+            the whole cover (contain + expand) so none of the art is cropped
+            away — a wide header keeps its full width, a portrait cover its
+            full height.
+          * A small icon (a plain app/exe icon, or a tiny Steam _icon.jpg
+            fallback) is shown at its natural small size, centred on a neutral
+            gradient — never upscaled to fill the tile, which would blur it.
+        """
         icon_path = a.get("icon")
-        if a.get("icon_fit") == "cover":
-            img = icon_image(icon_path, fit=ft.ImageFit.COVER, expand=True)
-            if img:
-                return ft.Container(img, expand=True, bgcolor="#131317")
+        size = _img_size(icon_path)
+        if _is_launcher_art(a) and size and max(size) >= _MIN_ART_PX and icon_image(icon_path):
+            aspect = size[0] / size[1]
+            close = abs(aspect / _TILE_ASPECT - 1) <= _ASPECT_TOL
+            fit = ft.ImageFit.COVER if close else ft.ImageFit.CONTAIN
+            return ft.Container(icon_image(icon_path, fit=fit, expand=True),
+                                expand=True, bgcolor="#131317")
         px = min(int(cover_h * 0.62), 88)
         img = icon_image(icon_path, width=px, height=px, fit=ft.ImageFit.CONTAIN)
         if img:
