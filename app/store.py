@@ -80,7 +80,9 @@ def portable_data_path() -> Path | None:
 
 
 def default_data_path() -> Path:
-    """Portable data (next to the exe) wins; otherwise %APPDATA%\\Centurio."""
+    """Portable data (next to the exe) wins; otherwise %APPDATA%\\Centurio.
+    Windows-only app — the Path.home() fallback is just defensive for the
+    rare case APPDATA isn't set, not a claim of cross-platform support."""
     portable = portable_data_path()
     if portable:
         return portable

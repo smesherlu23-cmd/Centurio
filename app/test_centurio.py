@@ -338,6 +338,73 @@ def test_log():
         ok("handled test error" in body and "boom" in body, "exception logged with traceback")
 
 
+def test_queries():
+    """app/queries.py + app/view_state.py: pure logic, no Flet involved —
+    the point of pulling it out of ui.py is exactly that this is testable
+    on its own."""
+    from app import queries
+    from app.view_state import ViewState
+
+    cats = [{"id": "work", "name": "Work", "order": 0}, {"id": "games", "name": "Games", "order": 1}]
+    apps = [
+        {"id": "1", "name": "Notion", "category_id": "work", "favorite": True, "last_launched": 100},
+        {"id": "2", "name": "Chrome", "category_id": "work", "last_launched": 200},
+        {"id": "3", "name": "CS2", "category_id": "games"},
+        {"id": "4", "name": "Orphan", "category_id": "missing"},
+    ]
+    running = {"2"}
+
+    ok(queries.valid_filter("category:missing", cats) == "all", "valid_filter drops a dead category")
+    ok(queries.valid_filter("category:work", cats) == "category:work", "valid_filter keeps a live category")
+    ok(queries.valid_filter("favorites", cats) == "favorites", "valid_filter passes non-category filters through")
+
+    fav = queries.build_sections(apps, cats, "favorites", "", "alpha", running)
+    ok([a["id"] for a in fav[0]["apps"]] == ["1"], "favorites section holds only favourited apps")
+
+    run = queries.build_sections(apps, cats, "running", "", "alpha", running)
+    ok([a["id"] for a in run[0]["apps"]] == ["2"], "running section matches the running-ids set")
+
+    rec = queries.build_sections(apps, cats, "recent", "", "alpha", running)
+    ok([a["id"] for a in rec[0]["apps"]] == ["2", "1"], "recent section sorts by last_launched, newest first")
+
+    cat_sec = queries.build_sections(apps, cats, "category:games", "", "alpha", running)
+    ok([a["id"] for a in cat_sec[0]["apps"]] == ["3"], "category section holds only that category's apps")
+
+    all_sec = queries.build_sections(apps, cats, "all", "", "alpha", running)
+    ok("Без категории" in [s["name"] for s in all_sec],
+       "an app whose category was deleted gets its own section instead of being dropped")
+
+    search = queries.build_sections(apps, cats, "all", "chrome", "alpha", running)
+    ok(len(search) == 1 and search[0]["apps"][0]["id"] == "2", "a search query overrides the active filter")
+
+    ok(queries.current_title("category:games", "", cats) == "Games", "current_title resolves a category name")
+    ok(queries.current_title("all", "x", cats) == "Поиск", "current_title shows search state over the filter")
+
+    # ViewState — persistence + revalidation, exercised without any widget.
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        store.add_category("Work")
+        wid = store.state()["categories"][0]["id"]
+        store.set_setting("view_filter", f"category:{wid}")
+        vs = ViewState(store)
+        ok(vs.filter == f"category:{wid}", "ViewState restores a persisted, still-valid filter")
+
+        vs.set_filter("favorites")
+        ok(store.state()["settings"]["view_filter"] == "favorites", "set_filter persists immediately")
+
+        vs.move_selection(1, 3)
+        ok(vs.selected == 0, "move_selection picks the first item from nothing selected")
+        vs.move_selection(1, 3)
+        ok(vs.selected == 1, "move_selection advances by one")
+        vs.move_selection(-5, 3)
+        ok(vs.selected == 0, "move_selection clamps at the start")
+
+        vs.set_filter(f"category:{wid}")
+        store.data["categories"] = []
+        vs.revalidate(store.state()["categories"])
+        ok(vs.filter == "all", "revalidate falls back once the active category is gone")
+
+
 def test_ui_build():
     try:
         from unittest.mock import MagicMock
@@ -461,6 +528,7 @@ if __name__ == "__main__":
     test_launch_options()
     test_data_ops()
     test_log()
+    test_queries()
     test_ui_build()
     print(f"\n{_passed} passed, {_failed} failed")
     sys.exit(1 if _failed else 0)

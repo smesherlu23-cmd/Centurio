@@ -11,11 +11,13 @@ import os
 import flet as ft
 
 from . import colors as C
+from . import queries
 from .format import (  # noqa: F401  (re-exported for dialogs/tests)
     CATEGORY_ICON_CHOICES, T, cat_icon, initials, plu_apps, plu_cats, time_ago)
 from .images import (  # noqa: F401  (re-exported for tests)
     _img_size, _is_launcher_art, _MIN_ART_PX, app_hue, icon_image, img_b64)
 from .store import Store
+from .view_state import ViewState
 
 
 class CenturioUI:
@@ -26,19 +28,12 @@ class CenturioUI:
         self.controllers = controllers or {}
         self.running: set[str] = set()
 
-        # View state — restored from the last session, then persisted on change.
-        s = store.state()["settings"]
-        self.filter = self._valid_filter(s.get("view_filter") or "all")
-        self.query = ""
-        # The "bar" (filters/recents/footer panel) is now independent of the
-        # selected category/filter — it's a floating panel toggled by the rail
-        # button, openable while browsing any category. Runtime-only (not
-        # persisted): every launch starts with it closed.
-        self.sidebar_open = False
-        self.sort = s.get("view_sort") if s.get("view_sort") in ("alpha", "recent", "added") else "alpha"
-        self.mode = s.get("view_mode") if s.get("view_mode") in ("grid", "list") else "grid"
-        # Keyboard-navigation cursor (index into the flat list of visible apps).
-        self.selected = -1
+        # View state (filter/search/sort/mode/selection/panel) is owned by
+        # ViewState, not CenturioUI — see app/view_state.py. The properties
+        # below are a thin, stable delegation so the rest of this file (and
+        # main.py, tests) can keep reading/writing self.filter etc. as plain
+        # attributes without knowing where the state actually lives.
+        self.view = ViewState(store)
         self._sel_id = None
 
         # Persistent controls
@@ -53,19 +48,56 @@ class CenturioUI:
         self.content_col = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
         self.status_container = ft.Container()
 
-    def _valid_filter(self, f):
-        """Guard a persisted filter: a category that no longer exists falls
-        back to 'all' so a deleted category doesn't leave a dead view."""
-        if f and f.startswith("category:"):
-            cid = f.split(":", 1)[1]
-            if not any(c["id"] == cid for c in self.store.state()["categories"]):
-                return "all"
-        return f or "all"
+    # ---------- view-state delegation ----------
+    # (kept as attributes, not `self.view.x`, so widget-building code below
+    # reads naturally; the actual state + transitions live in ViewState.)
+    @property
+    def filter(self):
+        return self.view.filter
 
-    def _persist_view(self):
-        self.store.set_setting("view_filter", self.filter)
-        self.store.set_setting("view_sort", self.sort)
-        self.store.set_setting("view_mode", self.mode)
+    @filter.setter
+    def filter(self, value):
+        self.view.filter = value
+
+    @property
+    def query(self):
+        return self.view.query
+
+    @query.setter
+    def query(self, value):
+        self.view.query = value
+
+    @property
+    def sort(self):
+        return self.view.sort
+
+    @sort.setter
+    def sort(self, value):
+        self.view.sort = value
+
+    @property
+    def mode(self):
+        return self.view.mode
+
+    @mode.setter
+    def mode(self, value):
+        self.view.mode = value
+
+    @property
+    def selected(self):
+        return self.view.selected
+
+    @selected.setter
+    def selected(self, value):
+        self.view.selected = value
+
+    @property
+    def sidebar_open(self):
+        return self.view.sidebar_open
+
+    @sidebar_open.setter
+    def sidebar_open(self, value):
+        self.view.sidebar_open = value
 
     # ---------- data helpers ----------
     def state(self):
@@ -283,8 +315,7 @@ class CenturioUI:
                       spacing=0)
 
     def _is_all_view(self):
-        # The "all applications" view family (main-menu rail item): all + its filters.
-        return not self.filter.startswith("category:")
+        return self.view.is_all_view()
 
     def _build_rail(self):
         all_active = self._is_all_view()
@@ -366,8 +397,7 @@ class CenturioUI:
                                  "Запущено", len(self.running), "running", C.GREEN),
         ]
 
-        recents = sorted([a for a in apps if a.get("last_launched")],
-                         key=lambda a: a["last_launched"], reverse=True)[:4]
+        recents = queries.recent_apps(apps, limit=4)
         if recents:
             top += [ft.Divider(height=1, color=C.LINE_2),
                     ft.Container(T("НЕДАВНИЕ", size=10.5, weight=ft.FontWeight.W_600,
@@ -509,7 +539,7 @@ class CenturioUI:
             controls.append(self._hero())
 
         if is_all and settings.get("show_quick_row"):
-            quick = [a for a in apps if a.get("quick")]
+            quick = queries.quick_apps(apps)
             if quick:
                 controls += self._quick_row(quick)
 
@@ -529,54 +559,8 @@ class CenturioUI:
         return controls
 
     def _sections(self):
-        apps = [a for a in self.apps() if self._matches(a)]
-        q = self.query.strip()
-        if q:
-            return [{"name": "Результаты поиска", "apps": self._sort(apps), "editable": False, "cid": None}]
-        if self.filter == "favorites":
-            return [{"name": "Избранное", "apps": self._sort([a for a in apps if a.get("favorite")]),
-                     "editable": False, "cid": None}]
-        if self.filter == "recent":
-            lst = sorted([a for a in apps if a.get("last_launched")],
-                         key=lambda a: a["last_launched"], reverse=True)
-            return [{"name": "Недавние", "apps": lst, "editable": False, "cid": None}]
-        if self.filter == "running":
-            return [{"name": "Запущено", "apps": self._sort([a for a in apps if a["id"] in self.running]),
-                     "editable": False, "cid": None}]
-        if self.filter.startswith("category:"):
-            cid = self.filter.split(":", 1)[1]
-            cat = next((c for c in self.categories() if c["id"] == cid), None)
-            return [{"name": cat["name"] if cat else "Категория",
-                     "apps": self._sort([a for a in apps if a.get("category_id") == cid]),
-                     "editable": bool(cat), "cid": cid}]
-        # all
-        sections = []
-        known = set()
-        for cat in self.categories():
-            known.add(cat["id"])
-            sections.append({"name": cat["name"], "cid": cat["id"], "editable": True,
-                             "apps": self._sort([a for a in apps if a.get("category_id") == cat["id"]])})
-        orphan = self._sort([a for a in apps if a.get("category_id") not in known])
-        if orphan:
-            sections.append({"name": "Без категории", "apps": orphan, "editable": False, "cid": None})
-        return [s for s in sections if s["apps"]]
-
-    def _matches(self, a):
-        q = self.query.strip().lower()
-        if not q:
-            return True
-        return q in a["name"].lower() or q in (a.get("sub") or "").lower()
-
-    def _sort(self, apps):
-        if self.sort == "alpha":
-            return sorted(apps, key=lambda a: a["name"].lower())
-        if self.sort == "recent":
-            return sorted(apps, key=lambda a: a.get("last_launched", 0), reverse=True)
-        if self.sort == "added":
-            return sorted(apps, key=lambda a: a.get("added_at", 0), reverse=True)
-        if self.sort == "manual":
-            return sorted(apps, key=lambda a: (a.get("order", 0), a.get("added_at", 0)))
-        return apps
+        return queries.build_sections(self.apps(), self.categories(), self.filter,
+                                      self.query, self.sort, self.running)
 
     def _hero(self):
         # Placeholder slot — functionality stripped for now (was the
@@ -829,12 +813,7 @@ class CenturioUI:
         return self.state()["settings"].get("accent", "#f5f5f7")
 
     def _current_title(self):
-        if self.query:
-            return "Поиск"
-        return {"all": "Все приложения", "favorites": "Избранное", "recent": "Недавние",
-                "running": "Запущено"}.get(self.filter) or (
-            next((c["name"] for c in self.categories()
-                  if self.filter == f"category:{c['id']}"), "Все приложения"))
+        return queries.current_title(self.filter, self.query, self.categories())
 
     def _path_tail(self, p):
         if not p:
@@ -845,27 +824,20 @@ class CenturioUI:
     def _toggle_sidebar(self):
         """Open/close the floating bar panel — independent of the current
         category/filter, so it can be toggled while browsing anything."""
-        self.sidebar_open = not self.sidebar_open
+        self.view.toggle_sidebar()
         self.refresh()
 
     def _set_filter(self, f):
-        self.filter = f
-        self.query = ""
+        self.view.set_filter(f)
         self.search_field.value = ""
-        self.selected = -1
-        self._persist_view()
         self.refresh()
 
     def _set_mode(self, m):
-        self.mode = m
-        self._persist_view()
+        self.view.set_mode(m)
         self.refresh()
 
     def _cycle_sort(self):
-        order = ["alpha", "recent", "added", "manual"]
-        cur = self.sort if self.sort in order else "alpha"
-        self.sort = order[(order.index(cur) + 1) % len(order)]
-        self._persist_view()
+        self.view.cycle_sort()
         self.refresh()
 
     def _move_app_to_category(self, app_id, cid):
@@ -886,13 +858,11 @@ class CenturioUI:
         ids.insert(ids.index(target_id) if target_id in ids else len(ids), dragged_id)
         self.store.reorder_apps(ids)
         if self.sort != "manual":
-            self.sort = "manual"
-            self._persist_view()
+            self.view.set_sort("manual")
         self.refresh()
 
     def _on_search(self, e):
-        self.query = e.control.value
-        self.selected = -1
+        self.view.set_query(e.control.value)
         self.refresh()
 
     def _icon_cache_dir(self):
@@ -930,7 +900,7 @@ class CenturioUI:
     # ---------- keyboard navigation ----------
     def _flat_apps(self):
         """Apps in on-screen order (the grid/list sections), for arrow-key nav."""
-        return [a for sec in self._sections() for a in sec["apps"]]
+        return queries.flatten_sections(self._sections())
 
     def _selected_id(self):
         flat = self._flat_apps()
@@ -943,8 +913,7 @@ class CenturioUI:
         if not flat:
             self.selected = -1
             return
-        cur = self.selected if self.selected >= 0 else (-1 if delta > 0 else 0)
-        self.selected = max(0, min(len(flat) - 1, cur + delta))
+        self.view.move_selection(delta, len(flat))
         self.refresh()
 
     def activate_selected(self):
@@ -977,8 +946,7 @@ class CenturioUI:
         # A category can be deleted while it's the active filter (or renamed/
         # recolored elsewhere); make sure we're never pointed at a filter that
         # no longer resolves to anything, instead of showing a dead, empty view.
-        self.filter = self._valid_filter(self.filter)
-        self._persist_view()
+        self.view.revalidate(self.categories())
         cb = self.controllers.get("on_library_changed")
         if cb:
             cb()

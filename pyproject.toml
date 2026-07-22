@@ -12,7 +12,7 @@ dependencies = [
     "psutil>=5.9.0",
 ]
 
-# Configuration for `flet build <target>` (Windows / macOS / Linux).
+# Configuration for `flet build windows` — Windows-only app (see README/BUILD.md).
 # See docs/BUILD.md for the full build + installer recipe.
 [tool.flet]
 org = "com.centurio"
