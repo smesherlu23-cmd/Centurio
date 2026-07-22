@@ -1,19 +1,9 @@
-"""Pure data queries over the library: turning (apps, categories, filter,
-search, sort, running) into what the UI shows — no Flet, no widgets, no
-``self``. Kept separate from ``ui.py`` so the actual "what's in favourites /
-recent / this category" logic can be tested and reasoned about without
-building a single control, and reused anywhere (sidebar counts, keyboard
-navigation, dialogs) without duplicating it inline.
-"""
 from __future__ import annotations
 
 SORT_KEYS = ("alpha", "recent", "added", "manual")
 
 
 def valid_filter(f: str, categories: list[dict]) -> str:
-    """Guard a filter value: a category that no longer exists (deleted,
-    or from a stale persisted setting) falls back to 'all' so nothing is
-    ever left pointing at a dead view."""
     if f and f.startswith("category:"):
         cid = f.split(":", 1)[1]
         if not any(c["id"] == cid for c in categories):
@@ -52,10 +42,6 @@ def quick_apps(apps: list[dict]) -> list[dict]:
 
 def build_sections(apps: list[dict], categories: list[dict], filter: str,
                     query: str, sort: str, running: set) -> list[dict]:
-    """The groups shown in the content area — ``{name, apps, editable, cid}``
-    — for the current filter/search/sort. This is the one place that decides
-    what "favourites", "recent", "running", a category, or the all-apps view
-    actually contain."""
     visible = [a for a in apps if matches(a, query)]
     q = (query or "").strip()
     if q:
@@ -78,8 +64,6 @@ def build_sections(apps: list[dict], categories: list[dict], filter: str,
         return [{"name": cat["name"] if cat else "Категория",
                  "apps": sort_apps([a for a in visible if a.get("category_id") == cid], sort),
                  "editable": bool(cat), "cid": cid}]
-    # "all" — every category as its own section, plus a catch-all for apps
-    # whose category was deleted (orphaned rather than silently dropped).
     sections = []
     known = set()
     for cat in categories:
@@ -93,7 +77,6 @@ def build_sections(apps: list[dict], categories: list[dict], filter: str,
 
 
 def flatten_sections(sections: list[dict]) -> list[dict]:
-    """Apps in on-screen order (the grid/list sections), for arrow-key nav."""
     return [a for sec in sections for a in sec["apps"]]
 
 

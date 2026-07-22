@@ -1,15 +1,8 @@
-"""Per-app colour tinting.
-
-Every app gets a deterministic hue; from it we derive a clean, saturated
-two-stop gradient for its tile (no haze, no glare) plus a readable glyph
-colour — echoing the refined Centurio palette.
-"""
 from __future__ import annotations
 
 import colorsys
 import re
 
-# Dark theme tokens (shared with the UI).
 BG_0 = "#08080a"
 BG_1 = "#0b0b0d"
 BG_2 = "#0a0a0c"
@@ -38,7 +31,6 @@ def _hex(rgb) -> str:
 
 
 def cover_colors(hue: int) -> tuple[str, str]:
-    """Bright top-left -> deeper bottom-right pair for a tile cover."""
     h = (hue % 360) / 360.0
     top = colorsys.hls_to_rgb(h, 0.58, 0.62)
     bottom = colorsys.hls_to_rgb(h, 0.42, 0.60)
@@ -46,7 +38,6 @@ def cover_colors(hue: int) -> tuple[str, str]:
 
 
 def chip_colors(hue: int) -> tuple[str, str]:
-    """Slightly brighter pair for small square icons (quick row, list, recents)."""
     h = (hue % 360) / 360.0
     top = colorsys.hls_to_rgb(h, 0.62, 0.62)
     bottom = colorsys.hls_to_rgb(h, 0.48, 0.60)
@@ -54,15 +45,10 @@ def chip_colors(hue: int) -> tuple[str, str]:
 
 
 def glyph_color(hue: int) -> str:
-    """Glyph colour on top of a cover — solid white reads cleanly on every hue."""
     return "#ffffff"
 
 
-# ---- category icon colours (user-editable via RGB / hex) ----
 def parse_hex(text) -> str | None:
-    """Normalise a colour string to '#rrggbb', or None if unparseable.
-
-    Accepts '#rgb', '#rrggbb' (with or without '#'), 'rgb(r,g,b)' and 'r,g,b'."""
     if not text:
         return None
     s = str(text).strip().lower()
@@ -90,8 +76,6 @@ def rgb_to_hex(r: int, g: int, b: int) -> str:
 
 
 def category_color(cat: dict) -> str:
-    """The category's icon colour: its explicit hex, else a pleasant colour
-    derived from the name so uncoloured categories still look distinct."""
     from .store import hue_from_string
     col = parse_hex(cat.get("color"))
     if col:

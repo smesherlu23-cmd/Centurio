@@ -1,11 +1,3 @@
-"""View state: the current filter, search query, sort, display mode, panel
-and keyboard-selection state — separate from widget building. ``CenturioUI``
-owns one ``ViewState`` and reads it while building controls; ``app/queries.py``
-turns (this state + library data) into the actual lists shown.
-
-None of this module touches Flet — it only knows about plain dicts (apps,
-categories, settings) and the store, so it can be exercised without a page.
-"""
 from __future__ import annotations
 
 from . import queries
@@ -22,15 +14,10 @@ class ViewState:
         self.query = ""
         self.sort = s.get("view_sort") if s.get("view_sort") in queries.SORT_KEYS else "alpha"
         self.mode = s.get("view_mode") if s.get("view_mode") in MODE_KEYS else "grid"
-        # The bar panel (filters/recents/footer) is independent of the
-        # selected filter/category — toggled by its own rail button.
-        # Runtime-only: every launch starts with it closed.
         self.sidebar_open = False
-        # Keyboard-navigation cursor (index into the flat list of visible apps).
         self.selected = -1
 
     def is_all_view(self):
-        """The 'all applications' family (main-menu rail item): all + its filters."""
         return not self.filter.startswith("category:")
 
     def persist(self):
@@ -65,9 +52,6 @@ class ViewState:
         self.sidebar_open = not self.sidebar_open
 
     def revalidate(self, categories):
-        """Call after the library changes — a category can be deleted while
-        it's the active filter (or the app started with a stale persisted
-        one); fall back instead of leaving the UI pointed at a dead view."""
         new = queries.valid_filter(self.filter, categories)
         if new != self.filter:
             self.filter = new

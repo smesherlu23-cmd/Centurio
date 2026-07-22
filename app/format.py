@@ -1,7 +1,4 @@
-"""Text, number, time and font-family formatting helpers for the UI.
-
-Pure presentation helpers with no view state — kept out of ui.py so the UI
-module stays focused on layout. Russian pluralisation lives here too.
+"""Попроавить нужно
 """
 from __future__ import annotations
 
@@ -12,9 +9,6 @@ import flet as ft
 CATEGORY_ICON_CHOICES = ["work", "brush", "sports_esports", "code", "folder",
                          "movie", "music_note", "chat", "terminal", "rocket_launch"]
 
-# A larger icon pack the user can pick from instead of the default first-letter
-# chip. Names map to ft.Icons.<UPPER>; cat_icon() falls back to a folder for any
-# name Flet doesn't know, so the list is safe to extend freely.
 ICON_PACK = [
     "work", "business", "apartment", "store", "home", "folder", "folder_special",
     "code", "terminal", "data_object", "bug_report", "build", "engineering", "memory",
@@ -35,7 +29,6 @@ _BOLD = {ft.FontWeight.BOLD, ft.FontWeight.W_700, ft.FontWeight.W_800, ft.FontWe
 
 
 def _family_for(weight):
-    """Pick a bundled Inter family for a weight (crisp real weights, not faux)."""
     if weight in _BOLD:
         return "Inter Bold"
     if weight == ft.FontWeight.W_600:
@@ -44,9 +37,6 @@ def _family_for(weight):
 
 
 def T(value="", **kw):
-    """ft.Text that resolves font_family from the requested weight, and maps the
-    'monospace' family to the bundled mono face — so text renders with the
-    intended weight everywhere."""
     fam = kw.get("font_family")
     if fam == "monospace":
         kw["font_family"] = "mono"

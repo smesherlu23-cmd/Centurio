@@ -1,9 +1,3 @@
-"""Dependency-free generator for the Centurio "C" icon.
-
-Draws the mark (dark "C" ring on a light diagonal gradient rounded square)
-and encodes a PNG using only the standard library (zlib + struct). Used for
-the window/taskbar icon and the tray icon, so no image files need shipping.
-"""
 from __future__ import annotations
 
 import math
@@ -82,7 +76,7 @@ def _png(rgba: bytearray, size: int) -> bytes:
     stride = size * 4
     raw = bytearray()
     for y in range(size):
-        raw.append(0)  # filter type 0
+        raw.append(0) 
         raw.extend(rgba[y * stride:(y + 1) * stride])
     idat = zlib.compress(bytes(raw), 9)
     return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
@@ -96,7 +90,6 @@ def generate_icon(path: Path | str, size: int = 256) -> Path:
 
 
 def ensure_icons(assets_dir: Path | str) -> Path:
-    """Generate icon.png (256) + tray.png (32) if missing; return icon.png path."""
     assets = Path(assets_dir)
     icon = assets / "icon.png"
     tray = assets / "tray.png"

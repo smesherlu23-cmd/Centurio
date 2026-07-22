@@ -1,4 +1,3 @@
-"""Modal dialogs: add/edit app, category management, settings."""
 from __future__ import annotations
 
 import shlex
@@ -41,7 +40,6 @@ def _primary_btn(label, on_click):
 
 
 def confirm(app_ui, title, message, confirm_label, on_confirm, danger=True):
-    """A small confirmation dialog (used before destructive actions)."""
     page = app_ui.page
 
     def do():
@@ -76,7 +74,6 @@ def _menu_item(icon, label, on_click, danger=False):
 
 
 def open_context_menu(app_ui, app):
-    """Right-click menu for an app tile/row."""
     page = app_ui.page
     store = app_ui.store
     fav = app.get("favorite")
@@ -135,7 +132,6 @@ def _toggle_quick(app_ui, app_id):
 
 
 def open_app_dialog(app_ui, existing=None):
-    """Route: adding uses the installed-apps picker; editing uses the detail form."""
     if existing is None:
         open_add_picker(app_ui)
     else:
@@ -143,13 +139,6 @@ def open_app_dialog(app_ui, existing=None):
 
 
 def open_add_picker(app_ui):
-    """Add apps by picking from a list of already-installed applications.
-
-    The list is discovered automatically (Start Menu / Uninstall / App Paths /
-    Steam / Epic). The user ticks one or more apps and adds them in a batch —
-    no naming or describing needed. A manual file picker remains available for
-    anything not in the list.
-    """
     import threading
     from pathlib import Path
 
@@ -160,7 +149,6 @@ def open_add_picker(app_ui):
     cats = app_ui.categories()
     icon_cache = str(Path(store.path).parent / "icons")
 
-    # Category is chosen explicitly by the user (not inferred from the current view).
     ui_state = {"category_id": cats[0]["id"] if cats else "work", "query": "", "apps": None,
                 "selected": set()}
 
@@ -265,7 +253,6 @@ def open_add_picker(app_ui):
             status.update()
         render()
 
-    # Manual fallback — still no naming: the file name becomes the app name.
     def on_pick(e):
         if not e.files:
             return
@@ -292,7 +279,6 @@ def open_add_picker(app_ui):
     def browse():
         picker.pick_files(dialog_title="Выберите приложение", allow_multiple=False)
 
-    # Primary "add selected" button whose label reflects the selection count.
     add_btn_label = T("Добавить выбранные", size=13, weight=ft.FontWeight.W_600, color=C.BG_1)
     add_btn = ft.Container(add_btn_label, height=40, padding=ft.padding.symmetric(0, 18),
                            bgcolor="#f5f5f7", border_radius=9, alignment=ft.alignment.center,
@@ -407,7 +393,6 @@ def _open_detail_dialog(app_ui, existing):
                          inactive_thumb_color=C.MUTED, inactive_track_color="#2a2a30",
                          on_change=lambda e: draft.__setitem__("run_as_admin", e.control.value))
 
-    # A dedicated directory picker for the working-folder field.
     dir_picker = getattr(app_ui, "_dir_picker", None)
     if dir_picker is None:
         dir_picker = ft.FilePicker()
@@ -438,7 +423,6 @@ def _open_detail_dialog(app_ui, existing):
     hue_slider = ft.Slider(min=0, max=359, value=draft["hue"], on_change=on_hue,
                            active_color="#ffffff", expand=True)
 
-    # File picker (desktop). Added to page overlay.
     def on_pick(e: ft.FilePickerResultEvent):
         if e.files:
             f = e.files[0]
@@ -453,8 +437,6 @@ def _open_detail_dialog(app_ui, existing):
                     name_in.update()
                     refresh_preview()
 
-    # Reuse a single FilePicker per session (don't stack a new one in the
-    # overlay every time the dialog opens).
     picker = getattr(app_ui, "_file_picker", None)
     if picker is None:
         picker = ft.FilePicker()
@@ -617,8 +599,6 @@ def open_categories_dialog(app_ui):
         name = new_field.value.strip()
         if not name:
             return
-        # New categories start as a first-letter chip (icon=None); the colour is
-        # derived from the name until the user picks one.
         store.add_category(name)
         new_field.value = ""
         new_field.focus()
@@ -650,8 +630,6 @@ def open_categories_dialog(app_ui):
 
 
 def _inline_name_field(app_ui, cat, rebuild):
-    """Rename a category directly in the list — no need to open the full
-    editor just to fix a typo. Commits on Enter or on losing focus."""
     store = app_ui.store
     tf = ft.TextField(
         value=cat["name"], expand=True, height=32, text_size=13, color=C.TEXT,
@@ -675,22 +653,16 @@ def _inline_name_field(app_ui, cat, rebuild):
 
 
 def _open_category_editor(app_ui, cat, on_done):
-    """Edit a category's name, icon colour (RGB / hex) and icon (first letter
-    or a pick from the icon pack)."""
     page = app_ui.page
     store = app_ui.store
     draft = {"name": cat["name"], "color": C.category_color(cat), "icon": cat.get("icon")}
 
     name_in = _text_input(draft["name"], "Название категории")
 
-    # ---- colour: preview + RGB sliders + hex field ----
     def _chip_glyph():
         if draft["icon"]:
             return ft.Icon(cat_icon(draft["icon"]), size=20, color=draft["color"])
         return T(initials(draft["name"]) or "?", size=17, weight=ft.FontWeight.BOLD, color=draft["color"])
-
-    # A live, realistic preview (matches how the chip renders in the rail/
-    # sidebar) instead of a flat colour swatch — updates as you type or pick.
     preview = ft.Container(_chip_glyph(), width=44, height=44, border_radius=14,
                            bgcolor=C.PANEL_2, alignment=ft.alignment.center,
                            border=ft.border.all(1, C.LINE_4))
@@ -752,7 +724,6 @@ def _open_category_editor(app_ui, cat, on_done):
                                                        [s.update() for s in sliders.values() if s.page],
                                                        apply_color(c)))
 
-    # ---- icon: first-letter option + icon pack grid ----
     icon_cells = ft.Row([], wrap=True, spacing=6, run_spacing=6)
 
     def render_icons():
@@ -846,7 +817,6 @@ def open_settings_dialog(app_ui):
                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             padding=ft.padding.symmetric(10, 0), border=ft.border.only(top=ft.BorderSide(1, C.LINE_2)))
 
-    # ---- data: import / export / backup / portable ----
     cfg_picker = getattr(app_ui, "_cfg_picker", None)
     if cfg_picker is None:
         cfg_picker = ft.FilePicker()

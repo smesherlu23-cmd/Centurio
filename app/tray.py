@@ -1,9 +1,3 @@
-"""System-tray integration.
-
-Uses pystray when it (and a working tray backend) is available. If pystray or
-Pillow is missing, or the platform has no tray, the controller degrades to a
-no-op so the app still runs — the window just won't hide to a tray icon.
-"""
 from __future__ import annotations
 
 import threading
@@ -21,8 +15,8 @@ class TrayController:
 
     def start(self) -> bool:
         try:
-            import pystray  # type: ignore
-            from PIL import Image  # type: ignore
+            import pystray  
+            from PIL import Image  
         except Exception:
             self.available = False
             return False

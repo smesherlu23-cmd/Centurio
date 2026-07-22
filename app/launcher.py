@@ -1,11 +1,3 @@
-"""Launch external applications and track which of them are running.
-
-Windows only. Executables are started with subprocess.Popen so their lifetime
-can be watched (drives the "Запущено" indicator). Documents, folders, shortcuts
-and URL-scheme launchers (e.g. Steam) are handed off to the shell. A tiny
-watcher thread notices when a tracked process exits and calls the on_change
-callback.
-"""
 from __future__ import annotations
 
 import ntpath
@@ -24,15 +16,14 @@ _DETACHED_PROCESS = 0x00000008
 
 class Launcher:
     def __init__(self, on_change=None):
-        self._procs: dict[str, subprocess.Popen] = {}   # apps we spawned
-        self._name_ids: set[str] = set()                # detected via psutil
-        self._exe_index: dict[str, set[str]] = {}       # exe basename -> app ids
+        self._procs: dict[str, subprocess.Popen] = {}  
+        self._name_ids: set[str] = set()                
+        self._exe_index: dict[str, set[str]] = {}       
         self._last_emit: frozenset[str] = frozenset()
         self._lock = threading.Lock()
         self._monitor_stop = None
         self.on_change = on_change
 
-    # ---- state ----
     def running_ids(self) -> list[str]:
         with self._lock:
             return list(set(self._procs.keys()) | self._name_ids)
@@ -52,23 +43,16 @@ class Launcher:
             except Exception:
                 pass
 
-    # ---- process-name monitoring (optional, needs psutil) ----
     def set_apps(self, apps):
-        """Index apps by the process name(s) that mean 'this app is running',
-        so already-running apps (launched anywhere, not just by us) show as
-        'running'. A URL launcher (Steam/Epic game) has no exe in its path, so
-        it's tracked purely by its explicit ``track_exe`` process name."""
         index: dict[str, set[str]] = {}
         for a in apps:
             names: set[str] = set()
-            # Explicit process name — the only way to track URL-launched games.
             track = (a.get("track_exe") or "").strip().lower()
             if track:
                 names.add(track)
-            # A real file path also names its own process.
             path = a.get("path") or ""
             if path and "://" not in path:
-                base = ntpath.basename(path).lower()   # Windows-style path split
+                base = ntpath.basename(path).lower() 
                 if base.endswith((".exe", ".bat", ".cmd", ".com")):
                     names.add(base)
             for base in names:
@@ -78,7 +62,7 @@ class Launcher:
 
     def start_monitor(self, interval: float = 4.0):
         try:
-            import psutil  # noqa: F401
+            import psutil 
         except Exception:
             return False
         if self._monitor_stop:
@@ -111,13 +95,11 @@ class Launcher:
         if self._monitor_stop:
             self._monitor_stop.set()
             self._monitor_stop = None
-
-    # ---- helpers ----
     def _is_executable(self, path: str) -> bool:
         return Path(path).suffix.lower() in _EXE_EXTS
 
     def _open_with_os(self, path: str):
-        os.startfile(path)  # type: ignore[attr-defined]  # Windows shell open
+        os.startfile(path) 
 
     def _work_dir(self, app: dict, path: str) -> str:
         wd = (app.get("working_dir") or "").strip()
@@ -127,7 +109,6 @@ class Launcher:
 
     @staticmethod
     def _as_args(args) -> list[str]:
-        """Accept either a list or a raw string of arguments."""
         if isinstance(args, str):
             try:
                 return shlex.split(args, posix=False)
@@ -136,8 +117,6 @@ class Launcher:
         return list(args or [])
 
     def _run_as_admin(self, path: str, args: list[str], cwd: str) -> dict:
-        """Launch elevated via ShellExecute 'runas' (triggers UAC). No process
-        handle comes back through UAC, so running-state relies on name matching."""
         try:
             import ctypes
             params = " ".join(f'"{a}"' if " " in a else a for a in args)
@@ -149,14 +128,11 @@ class Launcher:
             log.exception("run-as-admin failed for %s", path)
             return {"ok": False, "error": str(exc)}
 
-    # ---- launch ----
     def launch(self, app: dict) -> dict:
         path = app.get("path") or ""
         if not path:
             return {"ok": False, "error": "Не указан путь к приложению"}
 
-        # URL-scheme launch (e.g. Steam games via steam://rungameid/<id>,
-        # Epic via com.epicgames.launcher://…). Hand off to the OS, no tracking.
         if re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", path):
             try:
                 self._open_with_os(path)
@@ -178,7 +154,6 @@ class Launcher:
             try:
                 proc = subprocess.Popen([path, *args], cwd=cwd, creationflags=_DETACHED_PROCESS)
             except OSError:
-                # Fall back to the shell opener.
                 log.exception("Popen failed for %s; falling back to shell open", path)
                 try:
                     self._open_with_os(path)
@@ -190,8 +165,6 @@ class Launcher:
             self._watch(app_id, proc)
             self._emit()
             return {"ok": True, "running": True}
-
-        # Non-executable: hand to the OS, no tracking.
         try:
             self._open_with_os(path)
             return {"ok": True, "running": False}

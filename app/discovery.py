@@ -1,15 +1,3 @@
-"""Discover applications (and games) already installed on Windows.
-
-Sources:
-  * Windows — Start Menu shortcuts, Programs & Features (Uninstall) and
-    registered App Paths; real .exe icons are extracted to a PNG cache.
-  * Games   — Steam (installed appmanifest_*.acf, launched via steam://…) and
-    Epic Games (launcher manifests).
-
-`discover_apps(icon_cache)` returns a de-duplicated, sorted list of
-{"name", "path", "icon", "source"} dicts. `icon` is an absolute image path or
-None. Nothing here raises — on error it returns whatever was found.
-"""
 from __future__ import annotations
 
 import glob
@@ -90,12 +78,7 @@ def _md5(text: str) -> str:
     return hashlib.md5(text.lower().encode("utf-8")).hexdigest()
 
 
-# ================= Windows =================
-# Shared icon-extraction helpers. Uses the built-in ExtractAssociatedIcon
-# (always available on Windows PowerShell 5.1, no custom compilation) and, when
-# it compiles, a P/Invoke path for a larger 96px icon. Either way an icon is
-# produced — the earlier version silently failed when the inline C# didn't
-# compile, so regular apps got no icons.
+#  Винда
 _PS_ICON_FUNCS = r'''
 $ErrorActionPreference='SilentlyContinue'
 try{[Console]::OutputEncoding=[System.Text.Encoding]::UTF8}catch{}
@@ -166,11 +149,7 @@ if($r){ Write-Output $r }
 
 
 def _run_powershell(script: str, timeout: int = 60):
-    # Decode as UTF-8 (the script forces UTF-8 output) with errors="replace" so
-    # non-ASCII app names on localized Windows can never raise a decode error
-    # and wipe out the whole result. The default text=True path uses the ANSI
-    # locale codepage, which mismatches PowerShell's console output codepage on
-    # e.g. Russian Windows and made every discovered app silently disappear.
+    # декод
     return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
                           capture_output=True, text=True, encoding="utf-8", errors="replace",
                           timeout=timeout, creationflags=0x08000000)  # CREATE_NO_WINDOW
@@ -226,8 +205,8 @@ def _win_extract_one(path: str, icon_cache: str) -> str | None:
     return out if out and os.path.exists(out) else None
 
 
-# ================= Steam =================
-_STEAM_SKIP_ID = {"228980"}  # Steamworks Common Redistributables
+# стим
+_STEAM_SKIP_ID = {"228980"} 
 _STEAM_SKIP_NAME = ("steamworks common", "proton", "steam linux runtime", "steamvr media")
 
 # Executables that live inside a game folder but aren't the game itself — never
@@ -239,14 +218,7 @@ _STEAM_EXE_JUNK = ("unins", "uninstall", "vcredist", "vc_redist", "dxsetup", "dx
 
 
 def _steam_game_exe(lib: str, installdir: str | None, name: str) -> str | None:
-    """Best-effort main-executable basename for a Steam game.
-
-    Steam launches games via ``steam://`` (no PID for us to watch), so to show
-    an honest "Запущено" status we match the running process name instead. The
-    ACF doesn't record the exe, so we scan the install folder for the most
-    plausible one: prefer an .exe whose name resembles the game's, else the
-    largest non-junk .exe. Callers gate this to Windows — under Proton/native
-    Linux the process names are unreliable, so the user sets one by hand.
+    """пока только для винды, но можно высрать из этого и под линукс и мак, но потом мб
     """
     if not installdir:
         return None
@@ -260,7 +232,7 @@ def _steam_game_exe(lib: str, installdir: str | None, name: str) -> str | None:
             if not fn.lower().endswith(".exe"):
                 continue
             seen += 1
-            if seen > 20000:      # pathological install tree — stop scanning
+            if seen > 20000:      # ограничение 
                 break
             low = fn.lower()
             if any(j in low for j in _STEAM_EXE_JUNK):
@@ -282,8 +254,6 @@ def _steam_game_exe(lib: str, installdir: str | None, name: str) -> str | None:
 
 
 def steam_exe_for(path: str) -> str | None:
-    """Resolve the watch process name for an already-stored ``steam://`` app
-    (used to backfill games added before process-tracking existed)."""
     m = re.match(r"steam://rungameid/(\d+)", path or "")
     if not m or os.name != "nt":
         return None
@@ -335,20 +305,13 @@ def _vdf_val(text: str, key: str) -> str | None:
     return m.group(1) if m else None
 
 
-# Landscape banner art, sharpest/closest-fit first — every game gets the same
-# wide look. Portrait grid covers (library_600x900) are excluded so tiles are
-# uniform. Each name is looked up both flat ("<appid>_<name>") and in the
-# per-appid subfolder ("<appid>/<name>").
 _STEAM_ART_NAMES = (
-    "capsule_616x353.jpg",   # 616x353 (~1.75:1) — sharp and closest to the tile
-    "header.jpg",            # 460x215 (~2.14:1) — classic store banner
-    "library_hero.jpg",      # very wide key art
+    "capsule_616x353.jpg",   # 616x353 
+    "header.jpg",            # 460x215 
+    "library_hero.jpg",      
     "capsule_231x87.jpg",
 )
 _STEAM_PORTRAIT_HINTS = ("600x900", "library_600x900", "portrait")
-# Steam's public CDN. Two mirrors for reliability; capsule preferred over the
-# lower-res header. Used when a game has no landscape banner cached locally so
-# every tile still gets the same wide, sharp banner.
 _STEAM_CDN_HOSTS = ("cdn.cloudflare.steamstatic.com", "cdn.akamai.steamstatic.com")
 _STEAM_CDN_ART = ("capsule_616x353.jpg", "header.jpg")
 
@@ -366,10 +329,6 @@ def _http_get(url: str, timeout: int = 8) -> bytes | None:
 
 
 def _steam_cdn_art(appid: str, icon_cache: str | None) -> str | None:
-    """Download the game's landscape banner (capsule, falling back to header)
-    from Steam's CDN into the icon cache (once; cached thereafter). Returns the
-    local path, or None on any failure (offline, unknown appid, etc.) so callers
-    can fall back gracefully."""
     if not icon_cache:
         return None
     out = os.path.join(icon_cache, f"steam_{appid}_capsule.jpg")
@@ -378,7 +337,7 @@ def _steam_cdn_art(appid: str, icon_cache: str | None) -> str | None:
     for name in _STEAM_CDN_ART:
         for host in _STEAM_CDN_HOSTS:
             data = _http_get(f"https://{host}/steam/apps/{appid}/{name}")
-            if data and len(data) >= 1024:  # tiny responses are error pages
+            if data and len(data) >= 1024:  
                 try:
                     os.makedirs(icon_cache, exist_ok=True)
                     with open(out, "wb") as fh:
@@ -390,10 +349,6 @@ def _steam_cdn_art(appid: str, icon_cache: str | None) -> str | None:
 
 
 def _steam_logo(cache: str, sub: str, appid: str) -> str | None:
-    """The game's title logo (a transparent PNG of the game's name/emblem).
-    Used as a composed cover when there is no banner — shown prominently on a
-    gradient rather than force-fitted, so a game like Valheim reads as a proper
-    cover instead of a tiny square."""
     for p in (os.path.join(cache, f"{appid}_logo.png"), os.path.join(sub, "logo.png")):
         if os.path.exists(p):
             return p
@@ -401,26 +356,13 @@ def _steam_logo(cache: str, sub: str, appid: str) -> str | None:
 
 
 def _steam_icon(root: str, appid: str, icon_cache: str | None = None) -> tuple[str | None, str]:
-    """Return (image_path, fit) for a Steam game, best cover first:
 
-      1. A local landscape banner (capsule/header/hero) — fit="cover".
-      2. A landscape image from the older hashed subfolder layout — "cover".
-      3. The banner downloaded from Steam's CDN — "cover".
-      4. The game's title logo, shown as a composed cover — fit="logo".
-      5. The tiny 32px icon — fit="contain".
-
-    Portrait grid covers are never used, so every tile has the same wide look;
-    the logo tier means even a game with no banner still gets a real cover
-    (offline-safe), and the tiny icon is only a last resort."""
     cache = os.path.join(root, "appcache", "librarycache")
     sub = os.path.join(cache, str(appid))
-    # 1. Local landscape banner, flat layout and per-appid subfolder alike.
     for name in _STEAM_ART_NAMES:
         for p in (os.path.join(cache, f"{appid}_{name}"), os.path.join(sub, name)):
             if os.path.exists(p):
                 return p, "cover"
-    # 2. Older subfolder layout uses hashed filenames: largest landscape image
-    #    (not an icon, logo or portrait cover).
     if os.path.isdir(sub):
         imgs = glob.glob(os.path.join(sub, "*.jpg")) + glob.glob(os.path.join(sub, "*.png"))
         art = [p for p in imgs if os.path.isfile(p) and not any(
@@ -428,29 +370,21 @@ def _steam_icon(root: str, appid: str, icon_cache: str | None = None) -> tuple[s
             for k in ("icon", "logo", *_STEAM_PORTRAIT_HINTS))]
         if art:
             return max(art, key=lambda p: os.path.getsize(p)), "cover"
-    # 3. Fetch the banner from Steam's CDN.
     dl = _steam_cdn_art(appid, icon_cache)
     if dl:
         return dl, "cover"
-    # 4. Compose a cover from the title logo (no network needed).
     logo = _steam_logo(cache, sub, appid)
     if logo:
         return logo, "logo"
-    # 5. Last resort: the small flat square icon, centered on a neutral cover.
     icon = os.path.join(cache, f"{appid}_icon.jpg")
     if os.path.exists(icon):
         return icon, "contain"
     return None, "contain"
 
-
-# Portrait grid cover (~2:3), the tall poster Steam shows in its own library.
 _STEAM_PORTRAIT_NAMES = ("library_600x900_2x.jpg", "library_600x900.jpg")
 
 
 def _steam_portrait(root: str, appid: str, icon_cache: str | None = None) -> str | None:
-    """Path to the game's portrait poster (library_600x900), for the poster
-    game layout. Checked locally first, then fetched from Steam's CDN (cached).
-    Returns None when nothing is available, so callers fall back to the banner."""
     cache = os.path.join(root, "appcache", "librarycache")
     sub = os.path.join(cache, str(appid))
     for name in _STEAM_PORTRAIT_NAMES:
@@ -481,7 +415,6 @@ def _steam_cdn_portrait(appid: str, icon_cache: str | None) -> str | None:
 
 
 def poster_for(path: str, icon_cache: str | None = None) -> str | None:
-    """Portrait poster for an already-stored Steam app (steam://), else None."""
     m = re.match(r"steam://rungameid/(\d+)", path or "")
     if not m:
         return None
@@ -521,7 +454,7 @@ def _steam_games(icon_cache: str | None) -> list[dict]:
     return games
 
 
-# ================= Epic Games (Windows) =================
+# епик 
 def _epic_games(icon_cache: str | None) -> list[dict]:
     if os.name != "nt":
         return []
@@ -552,8 +485,6 @@ def _epic_games(icon_cache: str | None) -> list[dict]:
             continue
         icon = None
         loc, exe = d.get("InstallLocation"), d.get("LaunchExecutable")
-        # The manifest names the launch exe outright — watch it for "Запущено"
-        # (Epic, like Steam, launches via a URL scheme, so there's no PID).
         track = os.path.basename(exe) if exe else None
         if icon_cache and loc and exe:
             full = os.path.join(loc, exe)
@@ -565,9 +496,8 @@ def _epic_games(icon_cache: str | None) -> list[dict]:
     return games
 
 
-# ================= single-icon extraction (manual add) =================
+# нннннннннннннн
 def extract_icon(path: str, icon_cache: str | None) -> str | None:
-    """Best-effort icon for a manually chosen file."""
     if not path or not icon_cache:
         return None
     try:
@@ -579,7 +509,6 @@ def extract_icon(path: str, icon_cache: str | None) -> str | None:
 
 
 def resolve_icon_for(path: str, icon_cache: str | None = None) -> tuple[str | None, str]:
-    """(icon, fit) for an already-stored app path (Steam URL or a file)."""
     if not path:
         return None, "contain"
     m = re.match(r"steam://rungameid/(\d+)", path)
@@ -589,7 +518,6 @@ def resolve_icon_for(path: str, icon_cache: str | None = None) -> tuple[str | No
             icon, fit = _steam_icon(root, appid, icon_cache)
             if icon:
                 return icon, fit
-        # No Steam root found but we can still fetch the banner from the CDN.
         dl = _steam_cdn_art(appid, icon_cache)
         return (dl, "cover") if dl else (None, "contain")
     try:
@@ -599,23 +527,10 @@ def resolve_icon_for(path: str, icon_cache: str | None = None) -> tuple[str | No
         log.exception("resolve_icon_for failed for %s", path)
     return None, "contain"
 
-
-# Bump when the icon pipeline improves in a way that should refresh icons
-# already stored by an older version (e.g. higher-res .exe extraction, better
-# Steam art selection). backfill_icons(refresh=True) re-resolves once and the
-# caller records the new schema so it doesn't run again.
 ICON_SCHEMA = 7
 
 
 def backfill_icons(store, icon_cache: str | None = None, refresh: bool = False) -> bool:
-    """Fill in icons and the "sub" label (e.g. "Steam") for apps.
-
-    Normally only fills what's missing. With refresh=True it also RE-resolves
-    icons that are already present, so improvements to icon extraction / Steam
-    art selection reach apps that were added by an older version (whose stored
-    icon path may point at a low-res or worse-fitting image). A re-resolved
-    icon replaces the stored one only when resolution actually finds something
-    and it differs — a temporary failure never wipes a good existing icon."""
     changed = False
     for app in list(store.state().get("apps", [])):
         patch = {}
@@ -630,13 +545,10 @@ def backfill_icons(store, icon_cache: str | None = None, refresh: bool = False) 
                 patch["sub"] = "Steam"
             elif path.startswith("com.epicgames.launcher://"):
                 patch["sub"] = "Epic Games"
-        # Fill the watch process name for games added before process-tracking
-        # existed, so their "Запущено" status becomes honest too.
         if path.startswith("steam://") and not (app.get("track_exe") or "").strip():
             exe = steam_exe_for(path)
             if exe:
                 patch["track_exe"] = exe
-        # Fill the portrait poster for Steam games (for the poster game layout).
         if path.startswith("steam://") and (refresh or not app.get("poster")):
             poster = poster_for(path, icon_cache)
             if poster and poster != app.get("poster"):

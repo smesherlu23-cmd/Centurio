@@ -1,11 +1,3 @@
-"""Centurio — personal, always-in-the-tray hot panel of applications.
-
-Entry point. Wires the Flet window (frameless, custom title bar), the system
-tray, autostart, and the library UI together.
-
-Run desktop:  python main.py
-Run preview:  CENTURIO_WEB=1 python main.py   (serves the UI in a browser)
-"""
 from __future__ import annotations
 
 import os
@@ -35,14 +27,11 @@ def main(page: ft.Page):
 
     is_web = page.web or os.environ.get("CENTURIO_WEB") == "1"
 
-    # Window chrome (desktop only).
     page.title = "Centurio"
     page.bgcolor = "#0b0b0d"
     page.padding = 0
     page.spacing = 0
     page.theme_mode = ft.ThemeMode.DARK
-    # Bundled fonts keep the app self-contained (design uses Inter + a mono face)
-    # and make text render identically everywhere, without touching system fonts.
     page.fonts = {
         "Inter": "fonts/Inter-Regular.ttf",
         "Inter SemiBold": "fonts/Inter-SemiBold.ttf",
@@ -57,7 +46,6 @@ def main(page: ft.Page):
         page.window.frameless = True
         page.window.min_width = 940
         page.window.min_height = 620
-        # Restore the last window geometry, else default-size and center.
         page.window.width = s.get("win_w") or 1400
         page.window.height = s.get("win_h") or 880
         if s.get("win_x") is not None and s.get("win_y") is not None:
@@ -72,8 +60,6 @@ def main(page: ft.Page):
     launcher = Launcher()
 
     def quit_app():
-        # Make sure any pending debounced write (e.g. window geometry from a
-        # resize/move right before quitting) actually reaches disk.
         try:
             store.flush()
         except Exception:
@@ -81,8 +67,6 @@ def main(page: ft.Page):
         _quit(page)
 
     tray = TrayController(icon_path, on_show=lambda: _show_window(page), on_quit=quit_app)
-
-    # ---- window controllers passed to the UI ----
     ui_holder = {}
 
     def minimize():
@@ -113,11 +97,9 @@ def main(page: ft.Page):
         if key == "autostart":
             autostart.set_autostart(bool(value))
 
-    # Global hotkeys (best-effort). Trigger runs the app on the hotkey thread.
     hotkeys = HotkeyManager(on_trigger=lambda app_id: ui_holder["ui"]._launch(app_id))
 
     def refresh_runtime():
-        """Re-index processes and re-register hotkeys after the library changes."""
         apps = store.state()["apps"]
         launcher.set_apps(apps)
         if not is_web:
@@ -131,11 +113,8 @@ def main(page: ft.Page):
 
     ui = CenturioUI(page, store, launcher, controllers)
     ui_holder["ui"] = ui
-
-    # Launcher running-state changes repaint the UI (from the watcher/monitor thread).
     launcher.on_change = lambda ids: ui.set_running(ids)
 
-    # Keyboard shortcuts (in-app).
     def on_key(e: ft.KeyboardEvent):
         key = e.key
         if e.ctrl and key.lower() == "k":
@@ -154,7 +133,6 @@ def main(page: ft.Page):
             quick = [a for a in store.state()["apps"] if a.get("quick")]
             if 0 <= idx < len(quick):
                 ui._launch(quick[idx]["id"])
-        # Arrow-key navigation over the visible apps; Enter launches the cursor.
         elif key in ("Arrow Right", "Arrow Down"):
             ui.move_selection(1)
         elif key in ("Arrow Left", "Arrow Up"):
@@ -163,14 +141,8 @@ def main(page: ft.Page):
             ui.activate_selected()
     page.on_keyboard_event = on_key
 
-    # Persist window geometry (best-effort) as the user resizes/moves/maximizes.
-    #
-    # A resize/move sends many OS events in a row (every pixel of a drag), and
-    # each one used to trigger its own synchronous full-JSON write. Instead we
-    # update the in-memory settings on every event but only write to disk once
-    # the user has been idle for a short moment (debounced), plus always on
-    # close/quit so nothing is lost.
-    _GEOMETRY_FLUSH_DELAY = 0.5  # seconds of idle time before writing to disk
+
+    _GEOMETRY_FLUSH_DELAY = 0.5  
     geometry_timer_lock = threading.Lock()
     geometry_timer = {"handle": None}
 
@@ -212,7 +184,6 @@ def main(page: ft.Page):
             return
         _schedule_geometry_flush(immediate=flush)
 
-    # OS-level window events (frameless still emits close via prevent_close).
     def on_win_event(e):
         if e.data in ("resized", "moved", "maximize", "unmaximize"):
             save_window()
@@ -220,14 +191,8 @@ def main(page: ft.Page):
             save_window(flush=True)
             close()
     page.window.on_event = on_win_event if not is_web else None
-
     ui.mount()
 
-    # Backfill icons for apps added before icons existed (e.g. Steam games whose
-    # art wasn't found yet). When the icon pipeline has been upgraded since the
-    # library was last touched, re-resolve existing icons once so already-added
-    # apps pick up higher-res extraction / better Steam art. Runs off the UI
-    # thread; repaints when done.
     def _backfill():
         try:
             from app import discovery
@@ -241,16 +206,13 @@ def main(page: ft.Page):
         except Exception:
             log.exception("icon backfill failed")
     threading.Thread(target=_backfill, daemon=True).start()
-
-    # Index running processes + register global hotkeys, then keep them live.
     refresh_runtime()
     launcher.start_monitor()
 
-    # Periodic auto-detection of newly installed programs (opt-in setting).
     def _auto_rescan_loop():
         import time as _t
         while True:
-            _t.sleep(900)  # every 15 minutes
+            _t.sleep(900)  
             try:
                 if store.state()["settings"].get("auto_rescan"):
                     ui._rescan(silent=True)
@@ -258,7 +220,6 @@ def main(page: ft.Page):
                 log.exception("auto-rescan tick failed")
     threading.Thread(target=_auto_rescan_loop, daemon=True).start()
 
-    # Apply persisted settings + start tray on desktop.
     if not is_web:
         autostart.set_autostart(store.state()["settings"].get("autostart", False))
         tray.start()

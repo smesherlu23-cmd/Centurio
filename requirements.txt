@@ -1,18 +1,5 @@
-# Centurio — desktop app (Flet / Python)
-#
-# The [desktop] extra pulls the native client (flet-desktop on Windows/macOS,
-# flet-desktop-light on Linux) so `python main.py` opens a real window.
 flet[desktop]==0.28.3
-
-# System-tray support ("свернуть в трей").
 pystray>=0.19.5
 Pillow>=10.0.0
-
-# Global quick-launch hotkeys (system-wide).
 pynput>=1.7.6
-
-# Detect apps that are already running (the "Запущено" indicator).
 psutil>=5.9.0
-
-# All of the above degrade gracefully if missing — the app still runs,
-# just without that particular capability.

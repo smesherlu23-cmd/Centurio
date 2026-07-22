@@ -1,9 +1,3 @@
-"""Centurio UI built with Flet.
-
-A single CenturioUI object owns the page, builds the shell once, and repaints
-the dynamic regions (rail, sidebar, content, status bar) on every state change.
-Works on desktop (frameless window + tray) and, for preview, in web mode.
-"""
 from __future__ import annotations
 
 import os
@@ -12,9 +6,9 @@ import flet as ft
 
 from . import colors as C
 from . import queries
-from .format import (  # noqa: F401  (re-exported for dialogs/tests)
+from .format import (  
     CATEGORY_ICON_CHOICES, T, cat_icon, initials, plu_apps, plu_cats, time_ago)
-from .images import (  # noqa: F401  (re-exported for tests)
+from .images import ( 
     _img_size, _is_launcher_art, _MIN_ART_PX, app_hue, icon_image, img_b64)
 from .store import Store
 from .view_state import ViewState
@@ -27,16 +21,9 @@ class CenturioUI:
         self.launcher = launcher
         self.controllers = controllers or {}
         self.running: set[str] = set()
-
-        # View state (filter/search/sort/mode/selection/panel) is owned by
-        # ViewState, not CenturioUI — see app/view_state.py. The properties
-        # below are a thin, stable delegation so the rest of this file (and
-        # main.py, tests) can keep reading/writing self.filter etc. as plain
-        # attributes without knowing where the state actually lives.
         self.view = ViewState(store)
         self._sel_id = None
 
-        # Persistent controls
         self.search_field = ft.TextField(
             value="", hint_text="Поиск приложений…", border=ft.InputBorder.NONE,
             filled=False, dense=True, content_padding=ft.padding.symmetric(0, 0),
@@ -48,9 +35,6 @@ class CenturioUI:
         self.content_col = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
         self.status_container = ft.Container()
 
-    # ---------- view-state delegation ----------
-    # (kept as attributes, not `self.view.x`, so widget-building code below
-    # reads naturally; the actual state + transitions live in ViewState.)
     @property
     def filter(self):
         return self.view.filter
@@ -99,7 +83,6 @@ class CenturioUI:
     def sidebar_open(self, value):
         self.view.sidebar_open = value
 
-    # ---------- data helpers ----------
     def state(self):
         return self.store.state()
 
@@ -109,7 +92,6 @@ class CenturioUI:
     def apps(self):
         return self.state()["apps"]
 
-    # ---------- lifecycle ----------
     def mount(self):
         toolbar = self._build_toolbar()
         main = ft.Column(
@@ -132,15 +114,8 @@ class CenturioUI:
             pass
 
     def refresh(self, content_only=False):
-        """Repaint the dynamic regions. With content_only=True (used while the
-        user is typing a search query), the rail and status bar are left
-        alone — neither depends on the query — so only the content area (and
-        the bar panel, whose title does depend on the query) are rebuilt."""
         if not content_only:
             self.rail_container.content = self._build_rail()
-        # The bar ("Показать" panel) is a standalone toggle now — independent
-        # of which category/filter is currently selected — so it can be
-        # opened while browsing any category.
         show_sidebar = self.sidebar_open
         self.sidebar_container.visible = show_sidebar
         self.sidebar_container.content = self._build_sidebar() if show_sidebar else None
@@ -149,7 +124,6 @@ class CenturioUI:
             self.status_container.content = self._build_statusbar()
         self.page.update()
 
-    # ---------- small factory helpers ----------
     def _icon(self, name, size=16, color=C.MUTED):
         return ft.Icon(name, size=size, color=color)
 
@@ -162,10 +136,6 @@ class CenturioUI:
         return container
 
     def _chip_visual(self, a, size, letter_size, radius):
-        """Square icon for small contexts: real app icon if available, else a
-        coloured letter chip. Works for stored apps and discovered dicts."""
-        # In a small square chip, launcher cover art reads best filling the
-        # square; a plain app icon is shown whole (contain).
         fit = ft.ImageFit.COVER if _is_launcher_art(a) else ft.ImageFit.CONTAIN
         img = icon_image(a.get("icon"), width=size, height=size, fit=fit)
         if img:
@@ -181,18 +151,6 @@ class CenturioUI:
                                        colors=[c1, c2]))
 
     def _cover_content(self, a, cover_h):
-        """The tile cover base container. What to render is decided from the
-        *actual* image, not the stored icon_fit (which may be stale):
-
-          * A landscape launcher banner fills the tile, cropping the overflow
-            so there are no empty bands.
-          * A game title logo (its path contains "logo") is shown whole and
-            prominent on a subtle gradient — a composed cover for games with no
-            banner, so they read as intentional rather than a lost square.
-          * A small image — a plain app/exe icon, or a tiny Steam _icon.jpg
-            fallback — is shown at natural small size, centred on a gradient,
-            never upscaled into a blur.
-        """
         icon_path = a.get("icon")
         size = _img_size(icon_path)
         if _is_launcher_art(a) and size and max(size) >= _MIN_ART_PX and icon_image(icon_path):
@@ -221,7 +179,6 @@ class CenturioUI:
             gradient=ft.LinearGradient(begin=ft.alignment.top_left, end=ft.alignment.bottom_right,
                                        colors=[c1, c2]))
 
-    # ---------- titlebar ----------
     def _win_btn(self, icon_name, tooltip, handler, danger=False):
         c = ft.Container(
             ft.Icon(icon_name, size=14, color=C.MUTED),
@@ -264,10 +221,7 @@ class CenturioUI:
             padding=ft.padding.only(0, 0, 6, 0),
         )
 
-    # ---------- rail ----------
     def _cat_glyph(self, cat, size=19):
-        """A category's rail/label glyph: a picked icon, else its first letter,
-        tinted with the category colour (RGB/hex, user-editable)."""
         color = C.category_color(cat)
         if cat.get("icon"):
             return ft.Icon(cat_icon(cat.get("icon")), size=size, color=color)
@@ -287,12 +241,11 @@ class CenturioUI:
             highlight = e.data == "true"
             inner.bgcolor = "#1e1e22" if highlight else C.PANEL_2
             inner.border_radius = 14 if highlight else 22
-            if fixed_color is None:                 # default items tint on hover
+            if fixed_color is None:                 
                 inner.content.color = C.TEXT if highlight else C.MUTED
             inner.update()
         inner.on_hover = on_hover
 
-        # Categories accept dropped app tiles (drag-and-drop to move category).
         content = inner
         if on_drop_app is not None:
             def _accept(e):
@@ -323,13 +276,9 @@ class CenturioUI:
     def _build_rail(self):
         all_active = self._is_all_view()
         items = [
-            # Toggles the floating bar panel (filters/recents/footer) — works
-            # from any category, independent of the selected filter.
             self._rail_item(ft.Icon(ft.Icons.VIEW_SIDEBAR, size=19,
                                     color=C.TEXT if self.sidebar_open else C.MUTED),
                             self.sidebar_open, lambda: self._toggle_sidebar(), "Показать/скрыть панель"),
-            # "Главное меню" — the system, non-editable pseudo-category that
-            # shows every category's apps together (formerly "Все приложения").
             self._rail_item(ft.Icon(ft.Icons.GRID_VIEW, size=19, color=C.TEXT if all_active else C.MUTED),
                             all_active, lambda: self._set_filter("all"), "Главное меню"),
         ]
@@ -356,7 +305,6 @@ class CenturioUI:
             border=ft.border.only(right=ft.BorderSide(1, C.LINE_2)), expand=True,
         )
 
-    # ---------- sidebar ----------
     def _sidebar_filter(self, icon_ctl, label, count, key, count_color=None):
         active = self.filter == key
         row = ft.Container(
@@ -390,8 +338,6 @@ class CenturioUI:
             ft.Divider(height=1, color=C.LINE_2),
             ft.Container(T("ПОКАЗАТЬ", size=10.5, weight=ft.FontWeight.W_600,
                                  color=C.MUTED_2), padding=ft.padding.only(10, 0, 0, 8)),
-            # "Все приложения" moved out of the bar — it's now the dedicated
-            # "Главное меню" rail button (the system all-apps pseudo-category).
             self._sidebar_filter(ft.Icon(ft.Icons.STAR_BORDER, size=16, color=C.MUTED),
                                  "Избранное", fav, "favorites"),
             self._sidebar_filter(ft.Icon(ft.Icons.SCHEDULE, size=16, color=C.MUTED),
@@ -433,7 +379,6 @@ class CenturioUI:
         return row
 
     def _mini_toggle(self, value, on_toggle):
-        """Compact pill toggle matching the design (smaller than a Material Switch)."""
         knob = ft.Container(width=13, height=13, border_radius=7,
                             bgcolor=C.BG_1 if value else C.MUTED)
         return ft.Container(
@@ -469,7 +414,6 @@ class CenturioUI:
             padding=ft.padding.only(0, 10, 0, 0),
         )
 
-    # ---------- toolbar ----------
     def _build_toolbar(self):
         search = ft.Container(
             ft.Row([
@@ -522,7 +466,6 @@ class CenturioUI:
             padding=ft.padding.only(28, 18, 28, 12),
         )
 
-    # ---------- content ----------
     def _build_content(self):
         self._sel_id = self._selected_id()
         apps = self.apps()
@@ -537,8 +480,6 @@ class CenturioUI:
         settings = self.state()["settings"]
 
         if is_all:
-            # Placeholder — hero card functionality removed for now; the slot
-            # stays put regardless of state (nothing to launch/hide it).
             controls.append(self._hero())
 
         if is_all and settings.get("show_quick_row"):
@@ -566,8 +507,6 @@ class CenturioUI:
                                       self.query, self.sort, self.running)
 
     def _hero(self):
-        # Placeholder slot — functionality stripped for now (was the
-        # "Продолжить" card). Kept as an empty box that's always rendered.
         return ft.Container(
             bgcolor=C.PANEL, border=ft.border.all(1, C.LINE), border_radius=14,
             height=170, margin=ft.margin.only(0, 6, 0, 20),
@@ -617,22 +556,16 @@ class CenturioUI:
         return ft.Container(ft.Row(row, spacing=10), padding=ft.padding.only(0, 10, 0, 14))
 
     def _use_poster(self, a):
-        """A game with a portrait poster renders as a tall poster tile when the
-        poster layout is enabled (looks like a real game library)."""
         return bool(self.state()["settings"].get("game_posters", True)
                     and _is_launcher_art(a) and img_b64(a.get("poster")))
 
     def _grid(self, apps):
-        # A wrapping row of fixed-size tiles flows and sizes to its content, so it
-        # never clips rows regardless of window width (unlike a fixed-height GridView).
         tiles = [self._draggable_tile(a, apps) for a in apps]
         return ft.Container(ft.Row(tiles, wrap=True, spacing=15, run_spacing=15,
                                    vertical_alignment=ft.CrossAxisAlignment.START),
                             padding=ft.padding.only(0, 0, 0, 10))
 
     def _draggable_tile(self, a, section_apps):
-        """A tile that can be dragged to reorder (drop on another tile) or moved
-        to another category (drop on a rail category)."""
         compact = self.state()["settings"].get("tile_size") == "compact"
         running = a["id"] in self.running
         selected = a["id"] == self._sel_id
@@ -649,12 +582,10 @@ class CenturioUI:
         return ft.DragTarget(group="apps", content=drag, on_accept=on_accept)
 
     def _build_poster_tile(self, a, compact, running, selected, accent):
-        """A 2:3 portrait poster tile for a game (Steam library_600x900)."""
         width = 128 if compact else 158
         height = round(width * 1.5)
         poster = ft.Image(src_base64=img_b64(a.get("poster")), width=width, height=height,
                           fit=ft.ImageFit.COVER)
-        # Gradient scrim + name at the bottom so the title stays readable.
         scrim = ft.Container(
             T(a["name"], size=12.5, weight=ft.FontWeight.W_600, color="#ffffff",
               max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
@@ -808,7 +739,6 @@ class CenturioUI:
                             padding=ft.padding.symmetric(9, 28), bgcolor=C.BG_2,
                             border=ft.border.only(top=ft.BorderSide(1, C.LINE_2)))
 
-    # ---------- helpers ----------
     def _accent(self):
         return self.state()["settings"].get("accent", "#f5f5f7")
 
@@ -820,10 +750,8 @@ class CenturioUI:
             return ""
         return p.replace("\\", "/").rstrip("/").split("/")[-1]
 
-    # ---------- actions ----------
+
     def _toggle_sidebar(self):
-        """Open/close the floating bar panel — independent of the current
-        category/filter, so it can be toggled while browsing anything."""
         self.view.toggle_sidebar()
         self.refresh()
 
@@ -849,8 +777,6 @@ class CenturioUI:
             self._on_library_changed()
 
     def _reorder_app(self, section_apps, dragged_id, target_id):
-        """Place the dragged app just before the target within its section and
-        switch to manual sort so the new order sticks and is visible."""
         ids = [a["id"] for a in section_apps]
         if dragged_id not in ids or dragged_id == target_id:
             return
@@ -870,8 +796,6 @@ class CenturioUI:
         return str(Path(self.store.path).parent / "icons")
 
     def _rescan(self, silent=False):
-        """Re-resolve icons for existing apps and look for newly installed
-        programs. Runs off the UI thread; toasts the result."""
         import threading
 
         if not silent:
@@ -897,9 +821,7 @@ class CenturioUI:
                     self._toast("Не удалось пересканировать", error=True)
         threading.Thread(target=work, daemon=True).start()
 
-    # ---------- keyboard navigation ----------
     def _flat_apps(self):
-        """Apps in on-screen order (the grid/list sections), for arrow-key nav."""
         return queries.flatten_sections(self._sections())
 
     def _selected_id(self):
@@ -943,9 +865,6 @@ class CenturioUI:
         self.refresh()
 
     def _on_library_changed(self):
-        # A category can be deleted while it's the active filter (or renamed/
-        # recolored elsewhere); make sure we're never pointed at a filter that
-        # no longer resolves to anything, instead of showing a dead, empty view.
         self.view.revalidate(self.categories())
         cb = self.controllers.get("on_library_changed")
         if cb:
@@ -970,7 +889,6 @@ class CenturioUI:
         self.page.open(ft.SnackBar(T(msg, color=C.TEXT), bgcolor=C.PANEL_2,
                                    duration=2200))
 
-    # ---------- window ----------
     def _minimize(self):
         cb = self.controllers.get("minimize")
         if cb:
@@ -991,7 +909,6 @@ class CenturioUI:
         if cb:
             cb()
 
-    # ---------- dialogs ----------
     def _open_app_dialog(self, existing=None):
         from .dialogs import open_app_dialog
         open_app_dialog(self, existing)

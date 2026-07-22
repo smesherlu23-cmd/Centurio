@@ -1,8 +1,3 @@
-"""Persistence layer for Centurio (apps, categories, settings).
-
-Data is stored as JSON in a per-user directory. Writes are atomic
-(temp file + os.replace) so a crash never corrupts the library.
-"""
 from __future__ import annotations
 
 import copy
@@ -26,23 +21,18 @@ DEFAULT_SETTINGS = {
     "minimize_to_tray": True,
     "close_to_tray": True,
     "accent": "#f5f5f7",
-    "tile_size": "large",   # 'large' | 'compact'
+    "tile_size": "large",  
     "show_quick_row": True,
-    "game_posters": True,   # tall poster tiles for Steam/Epic games
-    "auto_rescan": False,   # periodically look for newly installed programs
-
-    # Remembered view state (restored on next launch).
-    "view_filter": "all",   # 'all' | 'favorites' | 'recent' | 'running' | 'category:<id>'
-    "view_sort": "alpha",   # 'alpha' | 'recent' | 'added'
-    "view_mode": "grid",    # 'grid' | 'list'
-    # Remembered window geometry (None until the window has been moved/resized).
+    "game_posters": True,   
+    "auto_rescan": False,   
+    "view_filter": "all",   
+    "view_sort": "alpha",   
+    "view_mode": "grid",    
     "win_w": None,
     "win_h": None,
     "win_x": None,
     "win_y": None,
     "win_max": False,
-    # Internal (not user-facing): bumped when the icon pipeline improves, so a
-    # one-time re-resolution can refresh icons stored by an older version.
     "icon_schema": 0,
 }
 
@@ -51,7 +41,6 @@ CATEGORY_ICONS = ["work", "brush", "sports_esports", "code", "folder",
 
 
 def hue_from_string(text: str) -> int:
-    """Deterministic hue (0..359) from a name — stable per-app tint."""
     digest = hashlib.md5(str(text).lower().encode("utf-8")).digest()
     return ((digest[0] << 8) | digest[1]) % 360
 
@@ -61,7 +50,6 @@ PORTABLE_FLAG = "portable.flag"
 
 
 def app_dir() -> Path:
-    """Folder the app is running from (where portable data lives)."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     if sys.argv and sys.argv[0]:
@@ -70,8 +58,6 @@ def app_dir() -> Path:
 
 
 def portable_data_path() -> Path | None:
-    """Portable data file next to the exe, if portable mode is in effect
-    (a data file or an empty ``portable.flag`` marker sits beside the exe)."""
     d = app_dir()
     p = d / DATA_FILENAME
     if p.exists() or (d / PORTABLE_FLAG).exists():
@@ -80,9 +66,6 @@ def portable_data_path() -> Path | None:
 
 
 def default_data_path() -> Path:
-    """Portable data (next to the exe) wins; otherwise %APPDATA%\\Centurio.
-    Windows-only app — the Path.home() fallback is just defensive for the
-    rare case APPDATA isn't set, not a claim of cross-platform support."""
     portable = portable_data_path()
     if portable:
         return portable
@@ -95,7 +78,6 @@ class Store:
         self.path = Path(path) if path else default_data_path()
         self.data = self._load()
 
-    # ---- load / persist ----
     def _defaults(self) -> dict:
         return {
             "version": 1,
@@ -127,10 +109,8 @@ class Store:
         os.replace(tmp, self.path)
 
     def state(self) -> dict:
-        """A deep copy safe for the UI to read."""
         return copy.deepcopy(self.data)
 
-    # ---- apps ----
     def add_app(self, app: dict) -> dict:
         cats = self.data["categories"]
         record = {
@@ -138,7 +118,6 @@ class Store:
             "name": app.get("name") or "Без названия",
             "path": app.get("path") or "",
             "args": app.get("args") or [],
-            # Launch options.
             "working_dir": app.get("working_dir") or "",
             "run_as_admin": bool(app.get("run_as_admin")),
             "sub": app.get("sub") or "",
@@ -146,16 +125,11 @@ class Store:
             "hue": app["hue"] if isinstance(app.get("hue"), int) else hue_from_string(app.get("name") or app.get("path") or ""),
             "icon": app.get("icon") or None,
             "icon_fit": app.get("icon_fit") or "contain",
-            # Portrait poster (Steam library_600x900) for the poster game layout.
             "poster": app.get("poster") or None,
             "favorite": bool(app.get("favorite")),
             "quick": bool(app.get("quick")),
             "hotkey": app.get("hotkey") or None,
-            # Process/executable name used to detect the "Запущено" state for
-            # apps we don't launch directly (Steam/Epic games run via a URL
-            # scheme, so there's no PID to watch — we match the process name).
             "track_exe": app.get("track_exe") or None,
-            # Manual sort position (drag-and-drop); ties fall back to added_at.
             "order": app["order"] if isinstance(app.get("order"), int) else len(self.data["apps"]),
             "last_launched": 0,
             "launch_count": 0,
@@ -181,7 +155,6 @@ class Store:
         return app
 
     def reorder_apps(self, ordered_ids: list[str]) -> None:
-        """Assign manual `order` from a sequence of app ids (drag-and-drop)."""
         pos = {aid: i for i, aid in enumerate(ordered_ids)}
         for app in self.data["apps"]:
             if app["id"] in pos:
@@ -205,10 +178,7 @@ class Store:
         self._persist()
         return app
 
-    # ---- categories ----
     def add_category(self, name: str, icon: str | None = None, color: str | None = None) -> dict:
-        # icon=None means "use the first letter of the name" (letter chip);
-        # a non-empty value is a material-icon name from the icon pack.
         cat = {"id": str(uuid.uuid4()), "name": name or "Категория",
                "icon": icon or None, "color": color or None,
                "order": len(self.data["categories"])}
@@ -234,7 +204,6 @@ class Store:
         self._persist()
 
     def move_category(self, cat_id: str, delta: int) -> None:
-        """Shift a category up (-1) or down (+1) in the ordering."""
         cats = sorted(self.data["categories"], key=lambda c: c.get("order", 0))
         ids = [c["id"] for c in cats]
         if cat_id not in ids:
@@ -258,12 +227,7 @@ class Store:
             self._persist()
         return changed
 
-    # ---- settings ----
     def set_setting(self, key: str, value, persist: bool = True) -> dict:
-        """Update a setting in memory. By default this also writes the whole
-        library to disk immediately; pass persist=False to batch several
-        updates (e.g. window geometry during a resize/move) and write them
-        once later via flush()."""
         if key in DEFAULT_SETTINGS:
             self.data["settings"][key] = value
             if persist:
@@ -271,13 +235,9 @@ class Store:
         return self.data["settings"]
 
     def flush(self) -> None:
-        """Write any pending in-memory changes (from persist=False calls) to
-        disk now. Safe to call even if nothing is pending."""
         self._persist()
 
-    # ---- import / export / backup / portable ----
     def export_data(self, dest: str | Path) -> Path:
-        """Write the whole library (apps + categories + settings) to a file."""
         dest = Path(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
         with open(dest, "w", encoding="utf-8") as fh:
@@ -285,13 +245,10 @@ class Store:
         return dest
 
     def backup(self) -> Path:
-        """Timestamped copy of the data file next to it."""
         stamp = time.strftime("%Y%m%d-%H%M%S")
         return self.export_data(self.path.with_name(f"centurio-backup-{stamp}.json"))
 
     def import_data(self, src: str | Path, merge: bool = False) -> bool:
-        """Load a library from a file. Replaces the current data (or merges apps
-        and categories by id when merge=True). Returns False on a bad file."""
         try:
             with open(src, "r", encoding="utf-8") as fh:
                 incoming = json.load(fh)
@@ -321,7 +278,6 @@ class Store:
         return portable_data_path() is not None and Path(self.path) == portable_data_path()
 
     def make_portable(self) -> Path:
-        """Copy the library next to the exe and switch to portable mode."""
         target = app_dir() / DATA_FILENAME
         self.path = target
         (app_dir() / PORTABLE_FLAG).write_text("", encoding="utf-8")

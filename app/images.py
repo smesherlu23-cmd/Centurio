@@ -1,6 +1,3 @@
-"""Image helpers for the UI: cached base64/SVG loading, image sizing and the
-per-app hue/cover heuristics. Kept out of ui.py so layout code stays lean.
-"""
 from __future__ import annotations
 
 import base64
@@ -14,13 +11,11 @@ _RASTER_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 _IMG_B64_CACHE: dict[str, tuple[float, str]] = {}
 _SVG_CACHE: dict[str, tuple[float, str]] = {}
 
-# Below this the image is a small icon, not cover art meant to fill a tile.
 _MIN_ART_PX = 160
 _IMG_SIZE_CACHE: dict[str, tuple[float, tuple[int, int] | None]] = {}
 
 
 def img_b64(path) -> str | None:
-    """Base64 of a raster image (cached by mtime); None for missing/SVG/etc."""
     if not path or not str(path).lower().endswith(_RASTER_EXT):
         return None
     try:
@@ -41,7 +36,6 @@ def img_b64(path) -> str | None:
 
 
 def _svg_markup(path) -> str | None:
-    """Raw <svg>…</svg> markup (cached by mtime); None for missing/non-SVG."""
     if not path or not str(path).lower().endswith(".svg"):
         return None
     try:
@@ -61,8 +55,6 @@ def _svg_markup(path) -> str | None:
 
 
 def icon_image(path, **kw) -> "ft.Image | None":
-    """An ft.Image for a raster (base64) or SVG (raw markup) icon path;
-    None when the path is missing or of an unsupported type."""
     b64 = img_b64(path)
     if b64:
         return ft.Image(src_base64=b64, **kw)
@@ -73,16 +65,11 @@ def icon_image(path, **kw) -> "ft.Image | None":
 
 
 def _is_launcher_art(a) -> bool:
-    """True for Steam/Epic entries, whose stored icon is real cover/header art
-    meant to fill a tile — as opposed to a plain app/exe icon."""
     path = a.get("path") or ""
     return path.startswith("steam://") or path.startswith("com.epicgames.launcher://")
 
 
 def _img_size(path) -> tuple[int, int] | None:
-    """(width, height) of a raster image (cached by mtime); None if it can't be
-    read or isn't a raster. Used to decide fit from the *actual* image rather
-    than trusting a possibly-stale stored icon_fit."""
     if not path or not str(path).lower().endswith(_RASTER_EXT):
         return None
     try:

@@ -1,18 +1,12 @@
-"""Centurio test suite.
-
-Pure-logic tests (store, colours, icon generation) always run. UI/dialog
-construction tests run when Flet is importable. Run with:  python tests/test_centurio.py
-"""
 import os
 import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.store import Store, hue_from_string          # noqa: E402
-from app import colors as C                            # noqa: E402
-from app import iconify                                # noqa: E402
-
+from app.store import Store, hue_from_string          # E402
+from app import colors as C                            
+from app import iconify                                
 _passed = 0
 _failed = 0
 
@@ -49,7 +43,6 @@ def test_store():
         s.update_app(a["id"], {"poster": "/x/poster.jpg"})
         ok(s.get_app(a["id"])["poster"] == "/x/poster.jpg", "poster updated")
 
-        # Launch options.
         ok(a.get("working_dir") == "" and a.get("run_as_admin") is False,
            "launch options default empty/false")
         s.update_app(a["id"], {"args": ["--x"], "working_dir": "/tmp", "run_as_admin": True})
@@ -57,14 +50,12 @@ def test_store():
         ok(got["args"] == ["--x"] and got["working_dir"] == "/tmp" and got["run_as_admin"] is True,
            "launch options updated")
 
-        # Manual app order (drag-and-drop).
         b = s.add_app({"name": "Zed", "path": "/z", "category_id": "dev"})
         s.reorder_apps([b["id"], a["id"]])
         ok(s.get_app(b["id"])["order"] == 0 and s.get_app(a["id"])["order"] == 1,
            "reorder_apps assigns order")
-        s.remove_app(b["id"])  # keep later single-app assertions valid
+        s.remove_app(b["id"])  
 
-        # Remembered view state round-trips through settings.
         s.set_setting("view_mode", "list")
         s.set_setting("view_filter", "favorites")
         ok(Store(path).state()["settings"]["view_mode"] == "list", "view_mode persisted")
@@ -81,8 +72,7 @@ def test_store():
         ok(got_cat["color"] == "#ff8800" and got_cat["icon"] == "sports_esports",
            "category colour + icon updated")
 
-        # Category reordering.
-        s.move_category(cat["id"], -1)  # move the new (last) category up one
+        s.move_category(cat["id"], -1) 
         order_ids = [c["id"] for c in sorted(s.state()["categories"], key=lambda c: c["order"])]
         ok(order_ids.index(cat["id"]) == len(order_ids) - 2, "move_category shifts order")
 
@@ -129,14 +119,12 @@ def test_discovery():
        "discovered apps are sorted")
     ok(discovery._looks_like_junk("Uninstall Foo") is True, "junk filter flags uninstallers")
     ok(discovery._looks_like_junk("Google Chrome") is False, "junk filter keeps real apps")
-    # System-app filter (Windows): OS tools out, real apps in.
     ok(discovery._is_windows_system("Character Map", r"C:\WINDOWS\system32\charmap.exe") is True,
        "system filter drops Windows-dir tools")
     ok(discovery._is_windows_system("Node.js", r"C:\Program Files\nodejs\node.exe") is True,
        "system filter drops runtimes like Node.js")
     ok(discovery._is_windows_system("Google Chrome", r"C:\Program Files\Google\Chrome\chrome.exe") is False,
        "system filter keeps real apps")
-    # Steam / VDF parsing
     ok(discovery._vdf_val('"appid" "570" "name" "Dota 2"', "appid") == "570", "vdf value parsed")
     ok(discovery._vdf_val("nothing", "name") is None, "vdf missing key -> None")
     ok("228980" in discovery._STEAM_SKIP_ID, "steam redistributables skipped")
@@ -144,9 +132,6 @@ def test_discovery():
     ok(ic is None and fit == "contain", "resolve_icon_for: missing steam art -> None/contain")
     ok(discovery.resolve_icon_for("")[0] is None, "resolve_icon_for: empty path -> None")
 
-    # Steam/Epic games carry a friendly "sub" label (was showing the raw
-    # appid, e.g. "730", because nothing set it and the UI fell back to the
-    # last path segment).
     with tempfile.TemporaryDirectory() as d:
         lib = os.path.join(d, "steamapps")
         os.makedirs(lib)
@@ -158,7 +143,7 @@ def test_discovery():
         ok(games and "track_exe" in games[0], "steam games carry a track_exe field")
         ok(games and "poster" in games[0], "steam games carry a poster field")
 
-    # Portrait poster: a local library_600x900 is found; non-steam paths -> None.
+
     with tempfile.TemporaryDirectory() as d:
         lc = os.path.join(d, "appcache", "librarycache")
         os.makedirs(lc)
@@ -169,8 +154,7 @@ def test_discovery():
         ok(discovery._steam_portrait(d, "999") is None, "steam portrait: missing -> None")
     ok(discovery.poster_for("C:/x/app.exe") is None, "poster_for: non-steam path -> None")
 
-    # _dedupe must preserve the "sub" and "track_exe" fields (both are needed
-    # downstream — the process name drives the honest "Запущено" status).
+
     deduped = discovery._dedupe([{"name": "CS2", "path": "steam://rungameid/730",
                                   "sub": "Steam", "source": "steam", "track_exe": "cs2.exe",
                                   "poster": "/x/p.jpg"}])
@@ -178,14 +162,9 @@ def test_discovery():
     ok(deduped[0]["track_exe"] == "cs2.exe", "_dedupe preserves track_exe field")
     ok(deduped[0]["poster"] == "/x/p.jpg", "_dedupe preserves poster field")
 
-    # _steam_game_exe picks the game's main .exe (for the running indicator):
-    # a name-matching exe wins, redistributables/uninstallers are ignored, and
-    # the largest remaining exe is the fallback.
     with tempfile.TemporaryDirectory() as d:
         gdir = os.path.join(d, "steamapps", "common", "Portal")
         os.makedirs(gdir)
-        # A smaller name-matching exe must beat a bigger unrelated (but non-junk)
-        # exe, and junk (redistributables/uninstallers) is ignored entirely.
         for fn, size in [("portal.exe", 500), ("bigtool.exe", 9000),
                          ("vcredist_x64.exe", 8000), ("crashhandler.exe", 100)]:
             with open(os.path.join(gdir, fn), "wb") as fh:
@@ -202,9 +181,6 @@ def test_discovery():
            "steam exe: largest non-junk exe is the fallback")
     ok(discovery._steam_game_exe("/x", None, "n") is None, "steam exe: no installdir -> None")
 
-    # PowerShell templates: balanced braces / here-strings after substitution
-    # (can't execute PowerShell on this platform, but a structural check
-    # catches template-interpolation mistakes).
     for name, tmpl, subs in [
         ("_WIN_PS", discovery._WIN_PS, {"__DIRS__": "'C:\\x'", "__CACHE__": "'C:\\c'"}),
         ("_WIN_ICON_ONE_PS", discovery._WIN_ICON_ONE_PS, {"__CACHE__": "'C:\\c'", "__EXE__": "'C:\\a.exe'"}),
@@ -217,13 +193,10 @@ def test_discovery():
         remaining = [k for k in ("__DIRS__", "__CACHE__", "__EXE__") if k in s]
         ok(not remaining, f"{name}: all placeholders substituted")
 
-    # backfill_icons also fills the sub label for entries that already have an
-    # icon (a Steam game with cached cover art but no sub was never touched
-    # by the old icon-only backfill).
     store2 = Store(os.path.join(tempfile.mkdtemp(), "d.json"))
     a = store2.add_app({"name": "CS2", "path": "steam://rungameid/730", "icon": "/fake/cover.jpg"})
     ok(not a.get("sub"), "precondition: no sub yet")
-    discovery._steam_roots = lambda: []  # icon resolution finds nothing; only sub should change
+    discovery._steam_roots = lambda: [] 
     changed = discovery.backfill_icons(store2, None)
     ok(changed and store2.get_app(a["id"])["sub"] == "Steam",
        "backfill_icons fixes sub even when icon already present")
@@ -252,8 +225,6 @@ def test_launcher_index():
     ok("chrome.exe" in keys and "vim.bat" in keys, "exe index built (Windows exe/bat)")
     ok(all("steam" not in k for k in keys), "URL launchers excluded from index")
 
-    # A URL-launched game (no exe in its path) is tracked by track_exe so its
-    # "running" state is honest — the whole point of process-name detection.
     lch.set_apps([{"id": "g", "path": "steam://rungameid/730", "track_exe": "cs2.exe"},
                   {"id": "h", "path": "C:/x/Chrome.exe", "track_exe": None}])
     idx = lch._exe_index
@@ -286,8 +257,6 @@ def test_launch_options():
         ok(lch._work_dir({"working_dir": d}, r"C:\x\app.exe") == d, "working_dir honoured")
         bad = lch._work_dir({"working_dir": "/no/such/dir"}, os.path.join(d, "app.exe"))
         ok(bad == d, "invalid working_dir falls back to exe folder")
-    # run_as_admin path: on a non-Windows host ShellExecute is unavailable, so it
-    # reports failure rather than crashing (the code path still runs).
     with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as tf:
         exe = tf.name
     try:
@@ -320,11 +289,10 @@ def test_log():
     import importlib
 
     from app import log as _log
-    importlib.reload(_log)  # fresh module so setup() isn't already configured
+    importlib.reload(_log)  
     import logging
     with tempfile.TemporaryDirectory() as d:
         _log.setup(debug=True, log_dir=d)
-        # Keep only the file handler so the test doesn't spew to the console.
         _log._LOGGER.handlers = [h for h in _log._LOGGER.handlers
                                  if isinstance(h, logging.FileHandler)]
         try:
@@ -339,9 +307,6 @@ def test_log():
 
 
 def test_queries():
-    """app/queries.py + app/view_state.py: pure logic, no Flet involved —
-    the point of pulling it out of ui.py is exactly that this is testable
-    on its own."""
     from app import queries
     from app.view_state import ViewState
 
@@ -380,7 +345,6 @@ def test_queries():
     ok(queries.current_title("category:games", "", cats) == "Games", "current_title resolves a category name")
     ok(queries.current_title("all", "x", cats) == "Поиск", "current_title shows search state over the filter")
 
-    # ViewState — persistence + revalidation, exercised without any widget.
     with tempfile.TemporaryDirectory() as d:
         store = Store(os.path.join(d, "data.json"))
         store.add_category("Work")
@@ -410,7 +374,7 @@ def test_ui_build():
         from unittest.mock import MagicMock
         from app.ui import CenturioUI
         from app import dialogs
-    except Exception as exc:  # Flet not installed — skip UI tests.
+    except Exception as exc: 
         print("SKIP UI tests (Flet unavailable):", exc)
         return
 
@@ -441,9 +405,6 @@ def test_ui_build():
     import shutil
     import time as _time
 
-    # mkdtemp (not the context manager): the Add picker spawns a background
-    # discovery thread that may create an icon-cache dir; ignore_errors cleanup
-    # avoids a race with rmtree.
     d = tempfile.mkdtemp()
     try:
         store = Store(os.path.join(d, "data.json"))
@@ -458,8 +419,6 @@ def test_ui_build():
         ok(isinstance(ui._build_content(), list), "content builds in list mode")
         ui.mode = "grid"
 
-        # Poster tile: a Steam game with a real portrait image renders as a
-        # poster when the layout is on, and keyboard nav walks the flat list.
         poster_png = iconify.generate_icon(os.path.join(d, "poster.png"), 48)
         store.add_app({"name": "Half-Life", "path": "steam://rungameid/70",
                        "poster": str(poster_png), "category_id": "games"})
@@ -489,7 +448,6 @@ def test_ui_build():
         ok(ui._cat_glyph(store.state()["categories"][0]) is not None, "category glyph builds")
         dialogs.open_settings_dialog(ui)
         ok(True, "settings dialog opens")
-        # Manual reorder + move-to-category actions run without error.
         ids = [a["id"] for a in store.state()["apps"]]
         if len(ids) >= 2:
             ui._reorder_app(store.state()["apps"], ids[1], ids[0])
@@ -505,7 +463,6 @@ def test_ui_build():
         ui.filter = "all"
         ok(isinstance(ui._build_content(), list), "empty library builds")
 
-        # Image helper: base64 for a real PNG, None otherwise.
         from app.ui import img_b64, app_hue
         icon_png = iconify.generate_icon(os.path.join(d, "t.png"), 32)
         ok(isinstance(img_b64(str(icon_png)), str), "img_b64 encodes a PNG")
@@ -513,7 +470,7 @@ def test_ui_build():
         ok(img_b64("/x/foo.svg") is None, "img_b64 skips non-raster")
         ok(0 <= app_hue({"name": "X"}) < 360, "app_hue falls back to name hue")
     finally:
-        _time.sleep(0.4)  # let the discovery thread settle
+        _time.sleep(0.4) 
         shutil.rmtree(d, ignore_errors=True)
 
 

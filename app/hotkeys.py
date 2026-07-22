@@ -1,10 +1,3 @@
-"""Global (system-wide) hotkeys for quick-launching apps.
-
-Best-effort via pynput: if pynput or a usable input backend isn't available,
-the manager degrades to a no-op (hotkeys simply won't fire) without crashing.
-Accelerators are written the friendly way ("Ctrl+Shift+1") and converted to
-pynput's GlobalHotKeys format ("<ctrl>+<shift>+1").
-"""
 from __future__ import annotations
 
 _MODS = {
@@ -16,7 +9,11 @@ _MODS = {
 
 
 def to_pynput(accel: str) -> str:
-    """'Ctrl+Shift+1' -> '<ctrl>+<shift>+1'  (F-keys -> '<f5>')."""
+
+
+    """по хорошему нужно сделать нормальный парсер, а не эту хуйню. еблан"""
+
+
     out = []
     for raw in str(accel).split("+"):
         p = raw.strip().lower()
@@ -35,12 +32,11 @@ def to_pynput(accel: str) -> str:
 
 class HotkeyManager:
     def __init__(self, on_trigger):
-        self.on_trigger = on_trigger          # fn(app_id)
+        self.on_trigger = on_trigger          
         self._listener = None
         self.available = False
 
     def register(self, bindings) -> bool:
-        """bindings: iterable of (accelerator, app_id)."""
         self.stop()
         try:
             from pynput import keyboard
@@ -87,8 +83,6 @@ class HotkeyManager:
 
 
 def quick_bindings(apps) -> list[tuple[str, str]]:
-    """Compute (accelerator, app_id) pairs: explicit per-app hotkeys plus
-    auto Ctrl+1..9 for the first quick-launch apps that have none."""
     bindings = []
     used = set()
     for a in apps:

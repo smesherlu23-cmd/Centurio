@@ -1,10 +1,3 @@
-"""Self-diagnostic for Centurio — run on the target machine to check that the
-platform-specific bits work. Prints what's available and what discovery finds.
-
-    python -m app.diagnose
-
-Copy the output and share it when reporting an issue.
-"""
 from __future__ import annotations
 
 import os
@@ -18,7 +11,7 @@ def _mod(name):
     try:
         __import__(name)
         return "OK"
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return f"MISSING ({exc.__class__.__name__})"
 
 

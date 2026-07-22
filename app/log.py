@@ -1,13 +1,3 @@
-"""Centurio logging.
-
-Quiet by default (nothing is written). Pass ``--debug`` on the command line or
-set ``CENTURIO_DEBUG=1`` to turn on a rotating log file next to the data file
-(``centurio.log``) plus echo to stderr — so a user can reproduce an issue and
-send the log instead of the errors being silently swallowed.
-
-Everything here is best-effort: if the log file can't be opened, logging simply
-stays off and the app keeps running.
-"""
 from __future__ import annotations
 
 import logging
@@ -31,7 +21,6 @@ def _default_dir() -> Path:
 
 
 def setup(debug: bool | None = None, log_dir: str | Path | None = None) -> logging.Logger:
-    """Configure logging once. Safe to call more than once (later calls no-op)."""
     global _configured
     if _configured:
         return _LOGGER
@@ -59,9 +48,6 @@ def setup(debug: bool | None = None, log_dir: str | Path | None = None) -> loggi
     _configured = True
     return _LOGGER
 
-
-# Module-level convenience wrappers so call sites read `from . import log;
-# log.exception(...)` without grabbing the logger object.
 def debug(msg, *args, **kw):
     _LOGGER.debug(msg, *args, **kw)
 
@@ -79,6 +65,4 @@ def error(msg, *args, **kw):
 
 
 def exception(msg, *args, **kw):
-    """Log an exception with traceback — use inside an `except` block instead of
-    swallowing the error with `pass`."""
     _LOGGER.exception(msg, *args, **kw)
