@@ -259,11 +259,21 @@ class Store:
         return changed
 
     # ---- settings ----
-    def set_setting(self, key: str, value) -> dict:
+    def set_setting(self, key: str, value, persist: bool = True) -> dict:
+        """Update a setting in memory. By default this also writes the whole
+        library to disk immediately; pass persist=False to batch several
+        updates (e.g. window geometry during a resize/move) and write them
+        once later via flush()."""
         if key in DEFAULT_SETTINGS:
             self.data["settings"][key] = value
-            self._persist()
+            if persist:
+                self._persist()
         return self.data["settings"]
+
+    def flush(self) -> None:
+        """Write any pending in-memory changes (from persist=False calls) to
+        disk now. Safe to call even if nothing is pending."""
+        self._persist()
 
     # ---- import / export / backup / portable ----
     def export_data(self, dest: str | Path) -> Path:

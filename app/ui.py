@@ -131,8 +131,13 @@ class CenturioUI:
         except Exception:
             pass
 
-    def refresh(self):
-        self.rail_container.content = self._build_rail()
+    def refresh(self, content_only=False):
+        """Repaint the dynamic regions. With content_only=True (used while the
+        user is typing a search query), the rail and status bar are left
+        alone — neither depends on the query — so only the content area (and
+        the bar panel, whose title does depend on the query) are rebuilt."""
+        if not content_only:
+            self.rail_container.content = self._build_rail()
         # The bar ("Показать" panel) is a standalone toggle now — independent
         # of which category/filter is currently selected — so it can be
         # opened while browsing any category.
@@ -140,7 +145,8 @@ class CenturioUI:
         self.sidebar_container.visible = show_sidebar
         self.sidebar_container.content = self._build_sidebar() if show_sidebar else None
         self.content_col.controls = self._build_content()
-        self.status_container.content = self._build_statusbar()
+        if not content_only:
+            self.status_container.content = self._build_statusbar()
         self.page.update()
 
     # ---------- small factory helpers ----------
@@ -630,7 +636,13 @@ class CenturioUI:
     def _draggable_tile(self, a, section_apps):
         """A tile that can be dragged to reorder (drop on another tile) or moved
         to another category (drop on a rail category)."""
-        base = self._poster_tile(a) if self._use_poster(a) else self._tile(a)
+        compact = self.state()["settings"].get("tile_size") == "compact"
+        running = a["id"] in self.running
+        selected = a["id"] == self._sel_id
+        accent = self._accent()
+        base = (self._build_poster_tile(a, compact, running, selected, accent)
+                 if self._use_poster(a) else
+                 self._build_tile(a, compact, running, selected, accent))
         drag = ft.Draggable(group="apps", content=base, data=a["id"])
 
         def on_accept(e):
@@ -639,12 +651,10 @@ class CenturioUI:
                 self._reorder_app(section_apps, src.data, a["id"])
         return ft.DragTarget(group="apps", content=drag, on_accept=on_accept)
 
-    def _poster_tile(self, a):
+    def _build_poster_tile(self, a, compact, running, selected, accent):
         """A 2:3 portrait poster tile for a game (Steam library_600x900)."""
-        compact = self.state()["settings"].get("tile_size") == "compact"
         width = 128 if compact else 158
         height = round(width * 1.5)
-        running = a["id"] in self.running
         poster = ft.Image(src_base64=img_b64(a.get("poster")), width=width, height=height,
                           fit=ft.ImageFit.COVER)
         # Gradient scrim + name at the bottom so the title stays readable.
@@ -668,10 +678,9 @@ class CenturioUI:
             right=8, top=8, width=26, height=26, border_radius=8, bgcolor="#0c0c0edd",
             alignment=ft.alignment.center, on_click=lambda e, i=a["id"]: self._toggle_fav(i)))
 
-        selected = a["id"] == self._sel_id
         tile = ft.Container(
             ft.Stack(children), width=width, height=height, bgcolor=C.PANEL,
-            border=ft.border.all(2, self._accent()) if selected else ft.border.all(1, C.LINE),
+            border=ft.border.all(2, accent) if selected else ft.border.all(1, C.LINE),
             border_radius=12, clip_behavior=ft.ClipBehavior.HARD_EDGE)
 
         def on_hover(e):
@@ -684,11 +693,9 @@ class CenturioUI:
                                   on_secondary_tap=lambda e, ap=a: self._open_context_menu(ap),
                                   mouse_cursor=ft.MouseCursor.CLICK)
 
-    def _tile(self, a):
-        compact = self.state()["settings"].get("tile_size") == "compact"
+    def _build_tile(self, a, compact, running, selected, accent):
         width = 152 if compact else 196
         cover_h = round(width * 0.62)
-        running = a["id"] in self.running
         cover_children = [self._cover_content(a, cover_h)]
         if running:
             cover_children.append(ft.Container(
@@ -719,13 +726,12 @@ class CenturioUI:
             ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.padding.only(13, 11, 13, 12))
 
-        selected = a["id"] == self._sel_id
         tile = ft.Container(
             ft.Column([ft.Container(ft.Stack(cover_children, expand=True), height=cover_h,
                                     clip_behavior=ft.ClipBehavior.HARD_EDGE), foot],
                       spacing=0, tight=True),
             width=width, bgcolor=C.PANEL,
-            border=ft.border.all(2, self._accent()) if selected else ft.border.all(1, C.LINE),
+            border=ft.border.all(2, accent) if selected else ft.border.all(1, C.LINE),
             border_radius=14, clip_behavior=ft.ClipBehavior.HARD_EDGE,
         )
 
@@ -740,36 +746,38 @@ class CenturioUI:
                                   mouse_cursor=ft.MouseCursor.CLICK)
 
     def _list(self, apps):
-        rows = []
-        for a in apps:
-            running = a["id"] in self.running
-            controls = [
-                self._chip_visual(a, 40, 17, 10),
-                ft.Column([T(a["name"], size=13.5, weight=ft.FontWeight.W_600, color=C.TEXT),
-                           T(a.get("sub") or self._path_tail(a.get("path")), size=11.5, color=C.MUTED_2)],
-                          spacing=1, expand=True, tight=True),
-            ]
-            if running:
-                controls.append(ft.Row([ft.Container(width=5, height=5, border_radius=3, bgcolor=C.GREEN),
-                                         T("Запущено", size=10, color="#7ee2a8")], spacing=5, tight=True))
-            controls.append(ft.Container(
-                ft.Icon(ft.Icons.STAR if a.get("favorite") else ft.Icons.STAR_BORDER, size=15,
-                        color=C.STAR if a.get("favorite") else C.MUTED),
-                width=30, height=30, border_radius=9, alignment=ft.alignment.center,
-                on_click=lambda e, i=a["id"]: self._toggle_fav(i)))
-            controls.append(ft.Container(ft.Icon(ft.Icons.MORE_HORIZ, size=16, color=C.MUTED),
-                                         width=30, height=30, border_radius=9, alignment=ft.alignment.center,
-                                         on_click=lambda e, ap=a: self._open_context_menu(ap)))
-            selected = a["id"] == self._sel_id
-            row = ft.Container(ft.Row(controls, spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                               padding=ft.padding.symmetric(10, 14), border_radius=11,
-                               border=ft.border.all(2, self._accent()) if selected else ft.border.all(1, C.LINE),
-                               bgcolor=C.PANEL,
-                               on_click=lambda e, i=a["id"]: self._launch(i))
-            if not selected:
-                self._hoverable(row, C.PANEL, C.PANEL_2)
-            rows.append(ft.GestureDetector(row, on_secondary_tap=lambda e, ap=a: self._open_context_menu(ap)))
+        rows = [self._list_row(a) for a in apps]
         return ft.Container(ft.Column(rows, spacing=6), padding=ft.padding.only(0, 0, 0, 10))
+
+    def _list_row(self, a):
+        running = a["id"] in self.running
+        selected = a["id"] == self._sel_id
+        accent = self._accent()
+        controls = [
+            self._chip_visual(a, 40, 17, 10),
+            ft.Column([T(a["name"], size=13.5, weight=ft.FontWeight.W_600, color=C.TEXT),
+                       T(a.get("sub") or self._path_tail(a.get("path")), size=11.5, color=C.MUTED_2)],
+                      spacing=1, expand=True, tight=True),
+        ]
+        if running:
+            controls.append(ft.Row([ft.Container(width=5, height=5, border_radius=3, bgcolor=C.GREEN),
+                                     T("Запущено", size=10, color="#7ee2a8")], spacing=5, tight=True))
+        controls.append(ft.Container(
+            ft.Icon(ft.Icons.STAR if a.get("favorite") else ft.Icons.STAR_BORDER, size=15,
+                    color=C.STAR if a.get("favorite") else C.MUTED),
+            width=30, height=30, border_radius=9, alignment=ft.alignment.center,
+            on_click=lambda e, i=a["id"]: self._toggle_fav(i)))
+        controls.append(ft.Container(ft.Icon(ft.Icons.MORE_HORIZ, size=16, color=C.MUTED),
+                                     width=30, height=30, border_radius=9, alignment=ft.alignment.center,
+                                     on_click=lambda e, ap=a: self._open_context_menu(ap)))
+        row = ft.Container(ft.Row(controls, spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                           padding=ft.padding.symmetric(10, 14), border_radius=11,
+                           border=ft.border.all(2, accent) if selected else ft.border.all(1, C.LINE),
+                           bgcolor=C.PANEL,
+                           on_click=lambda e, i=a["id"]: self._launch(i))
+        if not selected:
+            self._hoverable(row, C.PANEL, C.PANEL_2)
+        return ft.GestureDetector(row, on_secondary_tap=lambda e, ap=a: self._open_context_menu(ap))
 
     def _empty(self, title, text, btn_label, on_click):
         controls = [
@@ -863,7 +871,7 @@ class CenturioUI:
 
     def _on_search(self, e):
         self.view.set_query(e.control.value)
-        self.refresh()
+        self.refresh(content_only=True)
 
     def _icon_cache_dir(self):
         from pathlib import Path

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from pathlib import Path
 
 import flet as ft
@@ -69,7 +70,17 @@ def main(page: ft.Page):
         page.window.prevent_close = True
 
     launcher = Launcher()
-    tray = TrayController(icon_path, on_show=lambda: _show_window(page), on_quit=lambda: _quit(page))
+
+    def quit_app():
+        # Make sure any pending debounced write (e.g. window geometry from a
+        # resize/move right before quitting) actually reaches disk.
+        try:
+            store.flush()
+        except Exception:
+            log.exception("flushing store on quit failed")
+        _quit(page)
+
+    tray = TrayController(icon_path, on_show=lambda: _show_window(page), on_quit=quit_app)
 
     # ---- window controllers passed to the UI ----
     ui_holder = {}
@@ -89,7 +100,7 @@ def main(page: ft.Page):
         if store.state()["settings"].get("close_to_tray") and tray.available:
             _hide_window(page)
         else:
-            _quit(page)
+            quit_app()
 
     def hide_to_tray():
         if tray.available:
@@ -153,28 +164,60 @@ def main(page: ft.Page):
     page.on_keyboard_event = on_key
 
     # Persist window geometry (best-effort) as the user resizes/moves/maximizes.
-    def save_window():
+    #
+    # A resize/move sends many OS events in a row (every pixel of a drag), and
+    # each one used to trigger its own synchronous full-JSON write. Instead we
+    # update the in-memory settings on every event but only write to disk once
+    # the user has been idle for a short moment (debounced), plus always on
+    # close/quit so nothing is lost.
+    _GEOMETRY_FLUSH_DELAY = 0.5  # seconds of idle time before writing to disk
+    geometry_timer_lock = threading.Lock()
+    geometry_timer = {"handle": None}
+
+    def _flush_geometry_now():
+        with geometry_timer_lock:
+            geometry_timer["handle"] = None
+        try:
+            store.flush()
+        except Exception:
+            log.exception("flushing window geometry failed")
+
+    def _schedule_geometry_flush(immediate: bool):
+        with geometry_timer_lock:
+            if geometry_timer["handle"] is not None:
+                geometry_timer["handle"].cancel()
+                geometry_timer["handle"] = None
+            if immediate:
+                _flush_geometry_now()
+                return
+            t = threading.Timer(_GEOMETRY_FLUSH_DELAY, _flush_geometry_now)
+            t.daemon = True
+            geometry_timer["handle"] = t
+            t.start()
+
+    def save_window(flush: bool = False):
         try:
             w, h = page.window.width, page.window.height
-            if page.window.maximized:
-                store.set_setting("win_max", True)
-                return
-            store.set_setting("win_max", False)
-            if w and h:
-                store.set_setting("win_w", int(w))
-                store.set_setting("win_h", int(h))
-            if page.window.left is not None and page.window.top is not None:
-                store.set_setting("win_x", int(page.window.left))
-                store.set_setting("win_y", int(page.window.top))
+            maximized = page.window.maximized
+            store.set_setting("win_max", maximized, persist=False)
+            if not maximized:
+                if w and h:
+                    store.set_setting("win_w", int(w), persist=False)
+                    store.set_setting("win_h", int(h), persist=False)
+                if page.window.left is not None and page.window.top is not None:
+                    store.set_setting("win_x", int(page.window.left), persist=False)
+                    store.set_setting("win_y", int(page.window.top), persist=False)
         except Exception:
             log.exception("saving window geometry failed")
+            return
+        _schedule_geometry_flush(immediate=flush)
 
     # OS-level window events (frameless still emits close via prevent_close).
     def on_win_event(e):
         if e.data in ("resized", "moved", "maximize", "unmaximize"):
             save_window()
         elif e.data == "close":
-            save_window()
+            save_window(flush=True)
             close()
     page.window.on_event = on_win_event if not is_web else None
 
@@ -197,7 +240,6 @@ def main(page: ft.Page):
                 store.set_setting("icon_schema", discovery.ICON_SCHEMA)
         except Exception:
             log.exception("icon backfill failed")
-    import threading
     threading.Thread(target=_backfill, daemon=True).start()
 
     # Index running processes + register global hotkeys, then keep them live.
