@@ -789,9 +789,9 @@ def _open_category_editor(app_ui, cat, on_done):
         ], spacing=0, expand=True)], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Row([hex_in, ft.Row([preset_swatch(c) for c in presets], spacing=6, wrap=True)],
                spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        ft.Container(height=8), _field_label("Иконка (первая буква или из набора)"),
-        ft.Container(icon_cells, height=140, bgcolor=C.BG_0, border_radius=10,
-                     border=ft.border.all(1, C.LINE_2), padding=ft.padding.all(8)),
+        ft.Container(height=8), _field_label("Иконка"),
+        ft.Container(ft.Column([icon_cells], scroll=ft.ScrollMode.AUTO), height=140, bgcolor=C.BG_0,
+                     border_radius=10, border=ft.border.all(1, C.LINE_2), padding=ft.padding.all(8)),
     ], spacing=6, tight=True, scroll=ft.ScrollMode.AUTO, width=460)
 
     dlg = ft.AlertDialog(

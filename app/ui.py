@@ -244,9 +244,6 @@ class CenturioUI:
     def _build_titlebar(self):
         brand = ft.Row([
             T("Centurio", size=13.5, weight=ft.FontWeight.BOLD, color=C.TEXT),
-            ft.Container(width=1, height=14, bgcolor=C.LINE_4),
-            T("быстрый запуск приложений", size=11, color=C.MUTED_2,
-                    font_family="monospace"),
         ], spacing=10)
         drag = ft.WindowDragArea(
             ft.Container(brand, padding=ft.padding.only(18, 0, 0, 0),
@@ -802,16 +799,11 @@ class CenturioUI:
             alignment=ft.alignment.center, padding=ft.padding.only(0, 70, 0, 40))
 
     def _build_statusbar(self):
-        parts = [ft.Row([ft.Container(width=6, height=6, border_radius=3, bgcolor=C.GREEN),
-                         T("Centurio работает в фоне — значок в трее", size=11.5, color=C.MUTED_2)],
-                        spacing=7)]
+        parts = []
         if self.running:
             parts.append(T(f"{len(self.running)} запущено", size=11.5, color=C.MUTED_2,
                                  font_family="monospace"))
-        parts += [ft.Container(expand=True),
-                  T(f"{len(self.apps())} {plu_apps(len(self.apps()))} · "
-                          f"{len(self.categories())} {plu_cats(len(self.categories()))}",
-                          size=11.5, color=C.MUTED_2, font_family="monospace")]
+        parts += [ft.Container(expand=True)]
         return ft.Container(ft.Row(parts, spacing=16, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                             padding=ft.padding.symmetric(9, 28), bgcolor=C.BG_2,
                             border=ft.border.only(top=ft.BorderSide(1, C.LINE_2)))
