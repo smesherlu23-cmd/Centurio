@@ -1,11 +1,3 @@
-"""Centurio — personal, always-in-the-tray hot panel of applications.
-
-Entry point. Wires the Flet window (frameless, custom title bar), the system
-tray, autostart, and the library UI together.
-
-Run desktop:  python main.py
-Run preview:  CENTURIO_WEB=1 python main.py   (serves the UI in a browser)
-"""
 from __future__ import annotations
 
 import os
@@ -32,14 +24,12 @@ def main(page: ft.Page):
 
     is_web = page.web or os.environ.get("CENTURIO_WEB") == "1"
 
-    # Window chrome (desktop only).
     page.title = "Centurio"
     page.bgcolor = "#0b0b0d"
     page.padding = 0
     page.spacing = 0
     page.theme_mode = ft.ThemeMode.DARK
-    # Bundled fonts keep the app self-contained (design uses Inter + a mono face)
-    # and make text render identically everywhere, without touching system fonts.
+
     page.fonts = {
         "Inter": "fonts/Inter-Regular.ttf",
         "Inter SemiBold": "fonts/Inter-SemiBold.ttf",
@@ -61,7 +51,6 @@ def main(page: ft.Page):
     launcher = Launcher()
     tray = TrayController(icon_path, on_show=lambda: _show_window(page), on_quit=lambda: _quit(page))
 
-    # ---- window controllers passed to the UI ----
     ui_holder = {}
 
     def minimize():
@@ -92,11 +81,9 @@ def main(page: ft.Page):
         if key == "autostart":
             autostart.set_autostart(bool(value))
 
-    # Global hotkeys (best-effort). Trigger runs the app on the hotkey thread.
     hotkeys = HotkeyManager(on_trigger=lambda app_id: ui_holder["ui"]._launch(app_id))
 
     def refresh_runtime():
-        """Re-index processes and re-register hotkeys after the library changes."""
         apps = store.state()["apps"]
         launcher.set_apps(apps)
         if not is_web:
@@ -111,10 +98,8 @@ def main(page: ft.Page):
     ui = CenturioUI(page, store, launcher, controllers)
     ui_holder["ui"] = ui
 
-    # Launcher running-state changes repaint the UI (from the watcher/monitor thread).
     launcher.on_change = lambda ids: ui.set_running(ids)
 
-    # Keyboard shortcuts (in-app).
     def on_key(e: ft.KeyboardEvent):
         if e.ctrl and e.key.lower() == "k":
             ui.search_field.focus()
@@ -129,7 +114,6 @@ def main(page: ft.Page):
                 ui._launch(quick[idx]["id"])
     page.on_keyboard_event = on_key
 
-    # OS-level window close (frameless still emits it via prevent_close).
     def on_win_event(e):
         if e.data == "close":
             close()
@@ -137,8 +121,6 @@ def main(page: ft.Page):
 
     ui.mount()
 
-    # Backfill icons for apps added before icons existed (e.g. Steam games whose
-    # art wasn't found yet). Runs off the UI thread; repaints when done.
     def _backfill():
         try:
             from app import discovery
@@ -150,11 +132,9 @@ def main(page: ft.Page):
     import threading
     threading.Thread(target=_backfill, daemon=True).start()
 
-    # Index running processes + register global hotkeys, then keep them live.
     refresh_runtime()
     launcher.start_monitor()
 
-    # Apply persisted settings + start tray on desktop.
     if not is_web:
         autostart.set_autostart(store.state()["settings"].get("autostart", False))
         tray.start()

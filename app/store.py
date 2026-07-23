@@ -9,10 +9,10 @@ import uuid
 from pathlib import Path
 
 DEFAULT_CATEGORIES = [
-    {"id": "work", "name": "Работа", "icon": "work", "order": 0},
-    {"id": "create", "name": "Творчество", "icon": "brush", "order": 1},
-    {"id": "games", "name": "Игры", "icon": "sports_esports", "order": 2},
-    {"id": "dev", "name": "Разработка", "icon": "code", "order": 3},
+    {"id": "work", "name": "Работа", "icon": "work", "color": "#ffffff", "order": 0},
+    {"id": "create", "name": "Творчество", "icon": "brush", "color": "#ffffff", "order": 1},
+    {"id": "games", "name": "Игры", "icon": "sports_esports", "color": "#ffffff", "order": 2},
+    {"id": "dev", "name": "Разработка", "icon": "code", "color": "#ffffff", "order": 3},
 ]
 
 DEFAULT_SETTINGS = {
@@ -159,7 +159,7 @@ class Store:
 
     def add_category(self, name: str, icon: str | None = None, color: str | None = None) -> dict:
         cat = {"id": str(uuid.uuid4()), "name": name or "Категория",
-               "icon": icon or None, "color": color or None,
+               "icon": icon or None, "color": color or "#ffffff",
                "order": len(self.data["categories"])}
         self.data["categories"].append(cat)
         self._persist()

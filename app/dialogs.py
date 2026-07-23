@@ -99,12 +99,18 @@ def open_context_menu(app_ui, app):
                    close_then(lambda: app_ui._show_in_folder(app["id"]))),
         _menu_item(ft.Icons.EDIT_OUTLINED, "Изменить",
                    close_then(lambda: _open_detail_dialog(app_ui, store.get_app(app["id"]) or app))),
-        ft.Divider(height=1, color=C.LINE_2),
-        _menu_item(ft.Icons.DELETE_OUTLINE, "Удалить", close_then(do_delete), danger=True),
     ]
     for it in items:
         if isinstance(it, ft.Container):
             app_ui._hoverable(it, None, C.PANEL_2)
+
+    delete_btn = ft.Container(
+        ft.Row([ft.Icon(ft.Icons.DELETE_OUTLINE, size=17, color="#e88"),
+                T("Удалить", size=13.5, color="#e88", weight=ft.FontWeight.W_500)],
+               spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=ft.padding.symmetric(10, 12), border_radius=9, width=300,
+        on_click=close_then(do_delete))
+    app_ui._hoverable(delete_btn, None, C.PANEL_2)
 
     dialog = ft.AlertDialog(
         modal=True, bgcolor=C.PANEL,
@@ -112,6 +118,8 @@ def open_context_menu(app_ui, app):
                       T(app["name"], size=15, weight=ft.FontWeight.BOLD, color=C.TEXT,
                         max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)], spacing=11),
         content=ft.Container(ft.Column(items, spacing=2, tight=True), width=300),
+        actions=[ft.Divider(height=1, color=C.LINE_2), delete_btn],
+        actions_padding=ft.padding.only(12, 0, 12, 8),
         shape=ft.RoundedRectangleBorder(radius=16))
     page.open(dialog)
 
