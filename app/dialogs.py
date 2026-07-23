@@ -39,7 +39,7 @@ def _primary_btn(label, on_click):
                         on_click=lambda e: on_click(), alignment=ft.alignment.center)
 
 
-def confirm(app_ui, title, message, confirm_label, on_confirm, danger=True):
+def confirm(app_ui, title, confirm_label, on_confirm, danger=True):
     page = app_ui.page
 
     def do():
@@ -54,7 +54,6 @@ def confirm(app_ui, title, message, confirm_label, on_confirm, danger=True):
     dialog = ft.AlertDialog(
         modal=True, bgcolor=C.PANEL,
         title=T(title, size=17, weight=ft.FontWeight.BOLD, color=C.TEXT),
-        content=ft.Container(T(message, size=13, color=C.MUTED), width=380),
         actions=[ft.Row([ft.Container(expand=True),
                          _outline_btn("Отмена", None, lambda: page.close(dialog)),
                          confirm_btn])],
@@ -86,8 +85,7 @@ def open_context_menu(app_ui, app):
         return h
 
     def do_delete():
-        confirm(app_ui, "Удалить приложение?",
-                f"«{app['name']}» будет удалено из Centurio. Само приложение на диске не тронется.",
+        confirm(app_ui, f"Удалить «{app['name']}»?",
                 "Удалить", lambda: (_remove(app_ui, app["id"])))
 
     items = [
@@ -294,8 +292,6 @@ def open_add_picker(app_ui):
             add_btn.update()
 
     body = ft.Column([
-        T("Отметьте приложения галочками и нажмите «Добавить выбранные» — названия "
-          "подставятся автоматически.", size=12.5, color=C.MUTED_2),
         ft.Row([T("Добавить в категорию", size=12.5, color=C.TEXT_2), cat_dd],
                alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         search,
@@ -488,12 +484,9 @@ def _open_detail_dialog(app_ui, existing):
             page.close(dialog)
             app_ui._on_library_changed()
             app_ui._toast("Удалено")
-        confirm(app_ui, "Удалить приложение?",
-                f"«{existing['name']}» будет удалено из Centurio. Само приложение на диске не тронется.",
-                "Удалить", do)
+        confirm(app_ui, f"Удалить «{existing['name']}»?", "Удалить", do)
 
     body = ft.Column([
-        T("Закрепите программу для быстрого запуска из Centurio.", size=12.5, color=C.MUTED_2),
         ft.Container(height=6),
         _field_label("Файл приложения"),
         ft.Row([path_in, _outline_btn("Обзор", ft.Icons.FOLDER_OPEN, browse)], spacing=8,
@@ -505,8 +498,6 @@ def _open_detail_dialog(app_ui, existing):
         ft.Row([preview, hue_slider], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=6), _field_label("Горячая клавиша (глобальная)"), hotkey_in,
         ft.Container(height=6), _field_label("Процесс для статуса «Запущено»"), track_in,
-        T("Имя exe запущенного приложения — для игр Steam/Epic и программ, запущенных вне Centurio.",
-          size=10.5, color=C.MUTED_2),
         ft.Container(height=6), _field_label("Аргументы запуска"), args_in,
         ft.Container(height=6), _field_label("Рабочая папка"),
         ft.Row([workdir_in, _outline_btn("Обзор", ft.Icons.FOLDER_OPEN, browse_dir)], spacing=8,
@@ -518,10 +509,13 @@ def _open_detail_dialog(app_ui, existing):
 
     actions = []
     if is_edit:
-        actions.append(ft.Container(T("Удалить", size=12.5, weight=ft.FontWeight.W_600, color="#e88"),
-                                    height=40, padding=ft.padding.symmetric(0, 14),
-                                    border=ft.border.all(1, "#5a2a2a"), border_radius=9,
-                                    on_click=lambda e: remove(), alignment=ft.alignment.center))
+        actions.append(ft.Container(
+            ft.Row([ft.Icon(ft.Icons.DELETE_OUTLINE, size=15, color="#e88"),
+                    T("Удалить", size=12.5, weight=ft.FontWeight.W_600, color="#e88")],
+                   spacing=7, tight=True, alignment=ft.MainAxisAlignment.CENTER),
+            height=40, padding=ft.padding.symmetric(0, 14),
+            border=ft.border.all(1, "#5a2a2a"), border_radius=9,
+            on_click=lambda e: remove(), alignment=ft.alignment.center))
     actions += [ft.Container(expand=True),
                 _outline_btn("Отмена", None, lambda: page.close(dialog)),
                 _primary_btn("Сохранить" if is_edit else "Добавить", save)]
@@ -582,15 +576,12 @@ def open_categories_dialog(app_ui):
             app_ui._toast("Нельзя удалить последнюю категорию", error=True)
             return
         cat = next((c for c in app_ui.categories() if c["id"] == cid), None)
-        cnt = sum(1 for a in store.state()["apps"] if a.get("category_id") == cid)
-        msg = (f"Категория «{cat['name'] if cat else ''}» будет удалена."
-               + (f" {cnt} приложений будут перенесены в первую категорию." if cnt else ""))
 
         def do():
             store.remove_category(cid)
             rebuild()
             app_ui._on_library_changed()
-        confirm(app_ui, "Удалить категорию?", msg, "Удалить", do)
+        confirm(app_ui, f"Удалить категорию «{cat['name'] if cat else ''}»?", "Удалить", do)
 
     new_field = _text_input("", "Название категории")
     new_field.autofocus = True
@@ -806,50 +797,21 @@ def open_settings_dialog(app_ui):
                  ft.dropdown.Option(key="compact", text="Компактные")],
         on_change=lambda e: app_ui._set_setting("tile_size", e.control.value))
 
-    def setting_switch(title, hint, key):
+    def setting_switch(title, key):
         sw = ft.Switch(value=store.state()["settings"].get(key, False), scale=0.75,
                        active_track_color="#f5f5f7", active_color=C.BG_1,
                        inactive_thumb_color=C.MUTED, inactive_track_color="#2a2a30",
                        on_change=lambda e, k=key: app_ui._set_setting(k, e.control.value))
         return ft.Container(
-            ft.Row([ft.Column([T(title, size=13, color=C.TEXT_2),
-                               T(hint, size=11, color=C.MUTED_2)], spacing=1, expand=True, tight=True), sw],
+            ft.Row([T(title, size=13, color=C.TEXT_2, expand=True), sw],
                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             padding=ft.padding.symmetric(10, 0), border=ft.border.only(top=ft.BorderSide(1, C.LINE_2)))
 
-    cfg_picker = getattr(app_ui, "_cfg_picker", None)
-    if cfg_picker is None:
-        cfg_picker = ft.FilePicker()
-        app_ui._cfg_picker = cfg_picker
-        page.overlay.append(cfg_picker)
-        page.update()
-
-    def do_export(e):
-        if e.path:
-            try:
-                p = store.export_data(e.path)
-                app_ui._toast(f"Экспортировано: {p.name}")
-            except Exception:
-                app_ui._toast("Не удалось экспортировать", error=True)
-
-    def do_import(e):
-        if e.files and e.files[0].path:
-            if store.import_data(e.files[0].path):
-                page.close(dialog)
-                app_ui._on_library_changed()
-                app_ui._toast("Конфигурация импортирована")
-            else:
-                app_ui._toast("Неверный файл конфигурации", error=True)
-
     def export_cfg():
-        cfg_picker.on_result = do_export
-        cfg_picker.save_file(dialog_title="Экспорт конфигурации",
-                             file_name="centurio-config.json", allowed_extensions=["json"])
+        pass
 
     def import_cfg():
-        cfg_picker.on_result = do_import
-        cfg_picker.pick_files(dialog_title="Импорт конфигурации", allow_multiple=False,
-                              allowed_extensions=["json"])
+        pass
 
     def backup_cfg():
         try:
@@ -858,33 +820,20 @@ def open_settings_dialog(app_ui):
         except Exception:
             app_ui._toast("Не удалось создать копию", error=True)
 
-    def go_portable():
-        confirm(app_ui, "Портативный режим?",
-                "Данные будут скопированы рядом с программой (centurio-data.json) — так "
-                "Centurio можно носить с собой. Продолжить?", "Включить",
-                lambda: (store.make_portable(), app_ui._toast("Портативный режим включён")),
-                danger=False)
-
-    portable_label = ("Портативный режим включён" if store.is_portable
-                      else "Включить портативный режим")
-
     body = ft.Column([
-        T("Centurio — ваш пульт управления приложениями.", size=12.5, color=C.MUTED_2),
-        ft.Container(height=8), _field_label("Акцентный цвет"), swatch_row,
+        _field_label("Акцентный цвет"), swatch_row,
         ft.Container(height=12), _field_label("Размер плиток"), tile_dd,
-        setting_switch("Показывать «Быстрый запуск»", "Ряд закреплённых приложений сверху", "show_quick_row"),
-        setting_switch("Постеры для игр", "Вертикальные обложки Steam/Epic как в игровой библиотеке", "game_posters"),
-        setting_switch("Автообновление списка", "Периодически искать новые установленные программы", "auto_rescan"),
-        setting_switch("Автозапуск с Windows", "Запускать Centurio при входе в систему", "autostart"),
-        setting_switch("Сворачивать в трей", "Кнопка «свернуть» прячет окно в трей", "minimize_to_tray"),
-        setting_switch("Закрывать в трей", "Крестик не закрывает приложение, а прячет его", "close_to_tray"),
+        setting_switch("Показывать «Быстрый запуск»", "show_quick_row"),
+        setting_switch("Постеры для игр", "game_posters"),
+        setting_switch("Автообновление списка", "auto_rescan"),
+        setting_switch("Автозапуск с Windows", "autostart"),
+        setting_switch("Сворачивать в трей", "minimize_to_tray"),
+        setting_switch("Закрывать в трей", "close_to_tray"),
         ft.Container(height=12), _field_label("Данные и резервные копии"),
         ft.Row([_outline_btn("Экспорт", ft.Icons.UPLOAD, export_cfg),
                 _outline_btn("Импорт", ft.Icons.DOWNLOAD, import_cfg),
                 _outline_btn("Резервная копия", ft.Icons.BACKUP, backup_cfg)],
                spacing=8, wrap=True, run_spacing=8),
-        _outline_btn(portable_label, ft.Icons.USB,
-                     (lambda: None) if store.is_portable else go_portable),
         ft.Container(height=12),
         _outline_btn("Управление категориями", ft.Icons.FOLDER,
                      lambda: (page.close(dialog), open_categories_dialog(app_ui))),

@@ -282,7 +282,6 @@ def test_data_ops():
 
         bak = s.backup()
         ok(os.path.exists(bak) and "backup" in bak.name, "backup file created")
-        ok(s.is_portable is False, "temp store is not portable")
 
 
 def test_log():

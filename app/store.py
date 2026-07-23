@@ -4,7 +4,6 @@ import copy
 import hashlib
 import json
 import os
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -46,29 +45,9 @@ def hue_from_string(text: str) -> int:
 
 
 DATA_FILENAME = "centurio-data.json"
-PORTABLE_FLAG = "portable.flag"
-
-
-def app_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    if sys.argv and sys.argv[0]:
-        return Path(sys.argv[0]).resolve().parent
-    return Path.cwd()
-
-
-def portable_data_path() -> Path | None:
-    d = app_dir()
-    p = d / DATA_FILENAME
-    if p.exists() or (d / PORTABLE_FLAG).exists():
-        return p
-    return None
 
 
 def default_data_path() -> Path:
-    portable = portable_data_path()
-    if portable:
-        return portable
     base = Path(os.environ.get("APPDATA") or Path.home())
     return base / "Centurio" / DATA_FILENAME
 
@@ -272,14 +251,3 @@ class Store:
             self.data = clean
         self._persist()
         return True
-
-    @property
-    def is_portable(self) -> bool:
-        return portable_data_path() is not None and Path(self.path) == portable_data_path()
-
-    def make_portable(self) -> Path:
-        target = app_dir() / DATA_FILENAME
-        self.path = target
-        (app_dir() / PORTABLE_FLAG).write_text("", encoding="utf-8")
-        self._persist()
-        return target

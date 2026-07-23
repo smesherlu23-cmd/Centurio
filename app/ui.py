@@ -479,9 +479,6 @@ class CenturioUI:
         is_all = self.filter == "all" and not self.query.strip()
         settings = self.state()["settings"]
 
-        if is_all:
-            controls.append(self._hero())
-
         if is_all and settings.get("show_quick_row"):
             quick = queries.quick_apps(apps)
             if quick:
@@ -505,12 +502,6 @@ class CenturioUI:
     def _sections(self):
         return queries.build_sections(self.apps(), self.categories(), self.filter,
                                       self.query, self.sort, self.running)
-
-    def _hero(self):
-        return ft.Container(
-            bgcolor=C.PANEL, border=ft.border.all(1, C.LINE), border_radius=14,
-            height=170, margin=ft.margin.only(0, 6, 0, 20),
-        )
 
     def _quick_row(self, quick):
         cards = []
