@@ -104,6 +104,22 @@ def _clean_records(raw, clean) -> list[dict]:
     return out
 
 
+def _clean_settings(raw) -> dict:
+    """Merge in only known settings keys — mirrors set_setting()'s own check.
+
+    Without this, a key that set_setting() would reject (typo'd, renamed
+    between versions, hand-edited into the file) still made it into
+    state()["settings"] on load and stayed there forever: nothing ever wrote
+    it back out, but nothing dropped it either.
+    """
+    settings = dict(DEFAULT_SETTINGS)
+    if isinstance(raw, dict):
+        for key in DEFAULT_SETTINGS:
+            if key in raw:
+                settings[key] = raw[key]
+    return settings
+
+
 DATA_FILENAME = "centurio-data.json"
 
 
@@ -157,12 +173,11 @@ class Store:
         timestamp belongs, settings that aren't even an object).
         """
         cats = _clean_records(parsed.get("categories"), _clean_category)
-        settings = parsed.get("settings")
         return {
             "version": _as_int(parsed.get("version"), 1),
             "categories": cats or copy.deepcopy(DEFAULT_CATEGORIES),
             "apps": _clean_records(parsed.get("apps"), _clean_app),
-            "settings": {**DEFAULT_SETTINGS, **(settings if isinstance(settings, dict) else {})},
+            "settings": _clean_settings(parsed.get("settings")),
         }
 
     def _quarantine_corrupt(self, raw: str) -> None:

@@ -16,6 +16,7 @@ from app import iconify                               # noqa: E402
 
 _passed = 0
 _failed = 0
+_skipped: list[str] = []
 
 
 def ok(cond, msg):
@@ -25,6 +26,35 @@ def ok(cond, msg):
     else:
         _failed += 1
         print("FAIL:", msg)
+
+
+def skip(name, reason):
+    """Record a Flet-unavailable skip.
+
+    A bare print() here used to let a broken Flet install pass CI silently —
+    three UI tests would print "SKIP" and the run still exited 0. _summarize()
+    below turns any skip into a failure when running under CI, since the
+    workflow installs Flet as a hard requirement and a skip there means
+    something is actually wrong, not "Flet isn't installed, which is fine for
+    a local logic-only run."
+    """
+    _skipped.append(name)
+    print(f"SKIP {name} (Flet unavailable):", reason)
+
+
+def _summarize(passed: int, failed: int, skipped: list[str], is_ci: bool) -> tuple[int, str]:
+    """Turn the run's counters into (exit_code, report_line).
+
+    Pulled out of the __main__ block so the CI-escalation rule — any skip
+    under CI is a failure — is itself testable, not just exercised by the
+    one real run of this file.
+    """
+    if skipped and is_ci:
+        failed += 1
+        print(f"FAIL: {len(skipped)} test(s) skipped under CI (Flet should be installed here): "
+              f"{', '.join(skipped)}")
+    line = f"{passed} passed, {failed} failed" + (f", {len(skipped)} skipped" if skipped else "")
+    return (1 if failed else 0), line
 
 
 def test_store():
@@ -184,6 +214,19 @@ def test_store_load_validation():
            "settings that aren't an object fall back to the defaults")
         ok(state["version"] == 1, "a non-numeric version falls back to 1")
 
+        # set_setting() has always refused an unknown key (see "unknown setting
+        # rejected" in test_store above); loading used to let one straight
+        # through instead of filtering it the same way.
+        path2 = os.path.join(d, "data2.json")
+        with open(path2, "w", encoding="utf-8") as fh:
+            json.dump({"apps": [], "settings": {"accent": "#123456", "legacy_flag_removed": True}},
+                      fh)
+        settings2 = Store(path2).state()["settings"]
+        ok(settings2["accent"] == "#123456", "a known setting from disk is kept")
+        ok("legacy_flag_removed" not in settings2,
+           "an unknown key from disk is dropped, matching what set_setting() would do")
+        ok(set(settings2) == set(DEFAULT_SETTINGS), "the settings schema is exactly the known keys")
+
         # The sanitised library must survive the operations the UI performs.
         from app import queries
         sections = queries.build_sections(state["apps"], state["categories"], "all", "", "alpha", set())
@@ -287,7 +330,7 @@ def test_image_cache_bounded():
     try:
         from app import images
     except Exception as exc:  # flet only — a missing ceiling must not skip
-        print("SKIP image cache test (Flet unavailable):", exc)
+        skip("image cache test", exc)
         return
     _IMG_B64_CACHE, _LruCache, img_b64 = (images._IMG_B64_CACHE, images._LruCache, images.img_b64)
 
@@ -421,6 +464,32 @@ def test_hotkey_rejection():
 
     mapping, rejected = mgr._build_mapping(kb, [(None, "x"), ("", "y")])
     ok(not mapping and not rejected, "empty accelerators are skipped quietly")
+
+
+def test_ci_skip_escalation():
+    """A Flet skip is fine for a local run and a failure under CI.
+
+    The workflow installs Flet as a hard requirement (no `pip install ... ||
+    echo` fallback), but that alone doesn't catch every way the install can
+    come up broken — a wrong-platform wheel, a partial install that satisfies
+    `pip` but not `import flet`. _summarize() is the second guard: it turns a
+    skip into a failure whenever CI=true, which GitHub Actions sets on every
+    run, so a skip there can never quietly report success.
+    """
+    code, line = _summarize(10, 0, [], is_ci=True)
+    ok(code == 0 and "10 passed, 0 failed" in line, "no skips, CI=true -> still green")
+
+    code, line = _summarize(10, 0, ["UI tests"], is_ci=False)
+    ok(code == 0, "a skip outside CI is not a failure (local run without Flet)")
+    ok("1 skipped" in line, "the report mentions the skip even when it isn't fatal")
+
+    code, line = _summarize(10, 0, ["UI tests", "UI settings-cache test"], is_ci=True)
+    ok(code == 1, "any skip under CI fails the run")
+    ok("1 failed" in line and "2 skipped" in line,
+       "escalation adds one failure and the report still names the skip count")
+
+    code, line = _summarize(10, 2, [], is_ci=True)
+    ok(code == 1 and "2 failed" in line, "a genuine failure with no skips isn't inflated by escalation")
 
 
 def test_hotkey_no_double_launch():
@@ -970,8 +1039,8 @@ def test_ui_build():
         from unittest.mock import MagicMock
         from app.ui import CenturioUI
         from app import dialogs
-    except Exception as exc: 
-        print("SKIP UI tests (Flet unavailable):", exc)
+    except Exception as exc:
+        skip("UI tests", exc)
         return
 
     def _sample(store):
@@ -1095,7 +1164,7 @@ def test_ui_settings_cache():
         from unittest.mock import MagicMock
         from app.ui import CenturioUI
     except Exception as exc:
-        print("SKIP UI settings-cache test (Flet unavailable):", exc)
+        skip("UI settings-cache test", exc)
         return
 
     class FakePage:
@@ -1168,6 +1237,7 @@ if __name__ == "__main__":
     test_store_corrupt_recovery()
     test_cdn_circuit_breaker()
     test_hotkey_rejection()
+    test_ci_skip_escalation()
     test_hotkey_no_double_launch()
     test_geometry_debounce()
     test_autostart()
@@ -1187,5 +1257,6 @@ if __name__ == "__main__":
     test_queries()
     test_ui_build()
     test_ui_settings_cache()
-    print(f"\n{_passed} passed, {_failed} failed")
-    sys.exit(1 if _failed else 0)
+    code, line = _summarize(_passed, _failed, _skipped, bool(os.environ.get("CI")))
+    print(f"\n{line}")
+    sys.exit(code)

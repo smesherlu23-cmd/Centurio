@@ -2,7 +2,10 @@ name: Tests
 
 # Runs the suite on every push and pull request. The pure-logic tests (store,
 # discovery, colours, queries) need nothing but the standard library; the UI
-# tests skip themselves when Flet is unavailable.
+# tests need Flet. Flet is installed as a hard requirement here — a failed
+# install fails the job — and the suite itself refuses to report success if
+# a UI test still skipped under CI, so a partial/broken install can't pass
+# silently either.
 on:
   push:
     branches: ["**"]
@@ -19,8 +22,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Flet (optional, enables the UI tests)
-        run: pip install "flet==0.28.3" || echo "Flet unavailable - UI tests will skip"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
       - name: Run test suite
         run: python tests/test_centurio.py
