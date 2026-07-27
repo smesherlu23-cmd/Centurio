@@ -545,7 +545,7 @@ def _mini_btn(icon, on_click, color=None, disabled=False):
                         on_click=None if disabled else (lambda e: on_click()))
 
 
-def open_categories_dialog(app_ui):
+def open_categories_dialog(app_ui, focus_id=None):
     page = app_ui.page
     store = app_ui.store
     list_col = ft.Column(spacing=8, tight=True)
@@ -559,6 +559,7 @@ def open_categories_dialog(app_ui):
                                  border_radius=8, alignment=ft.alignment.center,
                                  on_click=lambda e, cc=c: _open_category_editor(app_ui, cc, rebuild),
                                  tooltip="Изменить цвет и иконку")
+            focused = c["id"] == focus_id
             list_col.controls.append(ft.Container(
                 ft.Row([glyph, _inline_name_field(app_ui, c, rebuild),
                         T(str(count), size=11, color=C.MUTED_2, font_family="monospace"),
@@ -569,8 +570,8 @@ def open_categories_dialog(app_ui):
                         _mini_btn(ft.Icons.TUNE, lambda cc=c: _open_category_editor(app_ui, cc, rebuild)),
                         _mini_btn(ft.Icons.DELETE_OUTLINE, lambda cid=c["id"]: remove_cat(cid))],
                        spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.padding.symmetric(8, 12), border_radius=10, bgcolor=C.BG_1,
-                border=ft.border.all(1, C.LINE)))
+                key=c["id"], padding=ft.padding.symmetric(8, 12), border_radius=10, bgcolor=C.BG_1,
+                border=ft.border.all(2, app_ui._accent()) if focused else ft.border.all(1, C.LINE)))
         if page.controls:
             page.update()
 
@@ -626,6 +627,11 @@ def open_categories_dialog(app_ui):
         shape=ft.RoundedRectangleBorder(radius=16),
     )
     page.open(dialog)
+    if focus_id:
+        try:
+            body.scroll_to(key=focus_id, duration=300)
+        except Exception:
+            pass
 
 
 def _inline_name_field(app_ui, cat, rebuild):

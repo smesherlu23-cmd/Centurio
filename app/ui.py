@@ -23,6 +23,12 @@ class CenturioUI:
         self.running: set[str] = set()
         self.view = ViewState(store)
         self._sel_id = None
+        # store.state() deep-copies the whole library (apps + categories +
+        # settings); reading it once per refresh() and handing this cache to
+        # every tile beats re-copying it per tile, which used to happen on
+        # every keystroke in the search box. Kept current by refresh() itself,
+        # which every setting-changing code path already calls.
+        self._settings = self.store.state()["settings"]
 
         self.search_field = ft.TextField(
             value="", hint_text="Поиск приложений…", border=ft.InputBorder.NONE,
@@ -114,6 +120,7 @@ class CenturioUI:
             pass
 
     def refresh(self, content_only=False):
+        self._settings = self.store.state()["settings"]
         if not content_only:
             self.rail_container.content = self._build_rail()
         show_sidebar = self.sidebar_open
@@ -172,7 +179,7 @@ class CenturioUI:
                                            colors=["#1e1e24", "#131317"]))
         hue = app_hue(a)
         c1, c2 = C.cover_colors(hue)
-        gsize = 34 if self.state()["settings"].get("tile_size") == "compact" else 46
+        gsize = 34 if self._settings.get("tile_size") == "compact" else 46
         return ft.Container(
             T(initials(a["name"]), size=gsize, weight=ft.FontWeight.BOLD, color=C.glyph_color(hue)),
             expand=True, alignment=ft.alignment.center,
@@ -389,7 +396,7 @@ class CenturioUI:
         )
 
     def _sidebar_footer(self):
-        s = self.state()["settings"]
+        s = self._settings
 
         def toggle(label, key):
             sw = self._mini_toggle(s.get(key, False),
@@ -477,7 +484,7 @@ class CenturioUI:
 
         controls = []
         is_all = self.filter == "all" and not self.query.strip()
-        settings = self.state()["settings"]
+        settings = self._settings
 
         if is_all and settings.get("show_quick_row"):
             quick = queries.quick_apps(apps)
@@ -547,7 +554,7 @@ class CenturioUI:
         return ft.Container(ft.Row(row, spacing=10), padding=ft.padding.only(0, 10, 0, 14))
 
     def _use_poster(self, a):
-        return bool(self.state()["settings"].get("game_posters", True)
+        return bool(self._settings.get("game_posters", True)
                     and _is_launcher_art(a) and img_b64(a.get("poster")))
 
     def _grid(self, apps):
@@ -557,7 +564,7 @@ class CenturioUI:
                             padding=ft.padding.only(0, 0, 0, 10))
 
     def _draggable_tile(self, a, section_apps):
-        compact = self.state()["settings"].get("tile_size") == "compact"
+        compact = self._settings.get("tile_size") == "compact"
         running = a["id"] in self.running
         selected = a["id"] == self._sel_id
         accent = self._accent()
@@ -731,7 +738,7 @@ class CenturioUI:
                             border=ft.border.only(top=ft.BorderSide(1, C.LINE_2)))
 
     def _accent(self):
-        return self.state()["settings"].get("accent", "#f5f5f7")
+        return self._settings.get("accent", "#f5f5f7")
 
     def _current_title(self):
         return queries.current_title(self.filter, self.query, self.categories())
@@ -882,8 +889,11 @@ class CenturioUI:
         self.refresh()
 
     def _toast(self, msg, error=False):
-        self.page.open(ft.SnackBar(T(msg, color=C.TEXT), bgcolor=C.PANEL_2,
-                                   duration=2200))
+        icon = ft.Icons.ERROR_OUTLINE if error else ft.Icons.CHECK_CIRCLE_OUTLINE
+        color = C.DANGER if error else C.GREEN
+        content = ft.Row([ft.Icon(icon, size=16, color=color), T(msg, color=C.TEXT)],
+                         spacing=10, tight=True)
+        self.page.open(ft.SnackBar(content, bgcolor=C.PANEL_2, duration=2200))
 
     def _minimize(self):
         cb = self.controllers.get("minimize")
@@ -915,7 +925,7 @@ class CenturioUI:
 
     def _open_categories(self, focus_id=None):
         from .dialogs import open_categories_dialog
-        open_categories_dialog(self)
+        open_categories_dialog(self, focus_id)
 
     def _open_settings(self):
         from .dialogs import open_settings_dialog

@@ -237,7 +237,13 @@ def test_colors():
     c1, c2 = C.cover_colors(200)
     ok(c1.startswith("#") and len(c1) == 7, "cover color is hex")
     ok(c1 != c2, "cover gradient has two stops")
-    ok(C.glyph_color(10) == "#ffffff", "glyph colour is white")
+    ok(C.glyph_color(10) == "#ffffff", "glyph colour is white on a red hue")
+    ok(C.glyph_color(240) == "#ffffff", "glyph colour is white on a blue hue")
+    ok(C.glyph_color(60) == C.BG_1, "glyph colour is dark on a bright yellow hue")
+    ok(C.glyph_color(120) == C.BG_1, "glyph colour is dark on a bright green hue")
+    for hue in range(0, 360, 30):
+        col = C.glyph_color(hue)
+        ok(col.startswith("#") and len(col) == 7, f"glyph_color({hue}) is a valid hex colour")
 
 
 def test_icon():
@@ -580,6 +586,11 @@ def test_ui_build():
         ok(True, "edit-app dialog opens")
         dialogs.open_categories_dialog(ui)
         ok(True, "categories dialog opens")
+        target_cat_id = store.state()["categories"][0]["id"]
+        dialogs.open_categories_dialog(ui, target_cat_id)
+        ok(True, "categories dialog opens with a category focused, without crashing")
+        dialogs.open_categories_dialog(ui, "no-such-category-id")
+        ok(True, "focusing a since-deleted category doesn't crash the dialog")
         dialogs._open_category_editor(ui, store.state()["categories"][0], lambda: None)
         ok(True, "category editor (colour + icon pack) opens")
         ok(ui._cat_glyph(store.state()["categories"][0]) is not None, "category glyph builds")
@@ -606,9 +617,78 @@ def test_ui_build():
         ok(img_b64("/no/such.png") is None, "img_b64 missing -> None")
         ok(img_b64("/x/foo.svg") is None, "img_b64 skips non-raster")
         ok(0 <= app_hue({"name": "X"}) < 360, "app_hue falls back to name hue")
+
+        from app import colors as _C
+        page.opened.clear()
+        ui._toast("Готово")
+        ui._toast("Ошибка", error=True)
+        ok_icon = page.opened[-2].content.controls[0]
+        err_icon = page.opened[-1].content.controls[0]
+        ok(ok_icon.color == _C.GREEN, "a success toast uses the green icon")
+        ok(err_icon.color == _C.DANGER, "an error toast uses the red icon, not the same look as success")
+        ok(ok_icon.name != err_icon.name, "success and error toasts use different icons")
     finally:
         _time.sleep(0.4) 
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_ui_settings_cache():
+    """_draggable_tile/_accent used to re-copy the whole store per tile via
+    self.state(); refresh() now reads settings once and every tile consumer
+    reuses that cache. Assert the store read count stays flat as the library
+    grows, instead of scaling with the number of apps rendered.
+    """
+    try:
+        from unittest.mock import MagicMock
+        from app.ui import CenturioUI
+    except Exception as exc:
+        print("SKIP UI settings-cache test (Flet unavailable):", exc)
+        return
+
+    class FakePage:
+        def __init__(self):
+            self.overlay = []
+            self.controls = []
+
+        def open(self, d):
+            pass
+
+        def close(self, d):
+            pass
+
+        def update(self):
+            pass
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        for i in range(5):
+            store.add_app({"name": f"App{i}", "path": f"/x/{i}", "category_id": "work"})
+
+        ui = CenturioUI(FakePage(), store, MagicMock())
+
+        calls = {"n": 0}
+        real_state = store.state
+
+        def counting_state():
+            calls["n"] += 1
+            return real_state()
+        store.state = counting_state
+
+        ui.refresh()
+        few_apps_calls = calls["n"]
+        ok(few_apps_calls > 0, "refresh() reads the store at least once")
+
+        for i in range(5, 80):
+            store.add_app({"name": f"App{i}", "path": f"/x/{i}", "category_id": "work"})
+
+        calls["n"] = 0
+        ui.refresh()
+        many_apps_calls = calls["n"]
+
+        ok(many_apps_calls == few_apps_calls,
+           "store.state() call count during refresh() doesn't grow with the number of apps")
+        ok(many_apps_calls < 10,
+           "refresh() reads the store a small, constant number of times, not once per tile")
 
 
 if __name__ == "__main__":
@@ -628,5 +708,6 @@ if __name__ == "__main__":
     test_log()
     test_queries()
     test_ui_build()
+    test_ui_settings_cache()
     print(f"\n{_passed} passed, {_failed} failed")
     sys.exit(1 if _failed else 0)

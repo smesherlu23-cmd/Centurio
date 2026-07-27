@@ -45,7 +45,17 @@ def chip_colors(hue: int) -> tuple[str, str]:
 
 
 def glyph_color(hue: int) -> str:
-    return "#ffffff"
+    """Initials/icon colour for a chip_colors()/cover_colors() gradient.
+
+    White reads fine on most hues at the lightness those gradients use, but
+    the yellow-through-cyan band (~40-195°) is perceptually bright enough at
+    the same HLS lightness that white text washes out — those get a dark
+    glyph instead.
+    """
+    h = (hue % 360) / 360.0
+    r, g, b = colorsys.hls_to_rgb(h, 0.55, 0.61)
+    luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return BG_1 if luminance > 0.6 else "#ffffff"
 
 
 def parse_hex(text) -> str | None:
