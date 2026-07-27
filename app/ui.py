@@ -796,6 +796,11 @@ class CenturioUI:
             from . import discovery, log
             try:
                 cache = self._icon_cache_dir()
+                if not silent:
+                    # An explicit rescan is the user's way of saying "try again" —
+                    # give artwork downloads another chance in case they were
+                    # switched off while the machine was offline.
+                    discovery.reset_cdn_state()
                 changed = discovery.backfill_icons(self.store, cache, refresh=True)
                 found = discovery.discover_apps(cache)
                 existing = {(a.get("path") or "").lower() for a in self.store.state()["apps"]}

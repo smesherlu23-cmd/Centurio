@@ -266,6 +266,9 @@ class Store:
         return self.export_data(self.path.with_name(f"centurio-backup-{stamp}.json"))
 
     def import_data(self, src: str | Path, merge: bool = False) -> bool:
+        """Load a previously exported file. Currently dormant: no UI path calls
+        this, so incoming records are trusted as-is. Validate every record
+        against add_app's schema before wiring it back up to a button."""
         try:
             with open(src, "r", encoding="utf-8") as fh:
                 incoming = json.load(fh)

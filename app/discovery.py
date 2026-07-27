@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 
 from . import log
 
@@ -316,16 +317,75 @@ _STEAM_CDN_HOSTS = ("cdn.cloudflare.steamstatic.com", "cdn.akamai.steamstatic.co
 _STEAM_CDN_ART = ("capsule_616x353.jpg", "header.jpg")
 
 
-def _http_get(url: str, timeout: int = 8) -> bytes | None:
+# Artwork downloads are best-effort. On a machine that is offline — or behind a
+# firewall that blackholes the CDN — every lookup would otherwise burn its full
+# timeout, once per game, turning a library scan into a multi-minute stall. So:
+# misses are remembered for the session, and a few consecutive *network* errors
+# switch downloads off until the next explicit rescan.
+_CDN_TIMEOUT = 4
+_CDN_MAX_BYTES = 8 * 1024 * 1024
+_CDN_MAX_FAILURES = 3
+
+_cdn_lock = threading.Lock()
+_cdn_failures = 0
+_cdn_misses: set[str] = set()
+
+
+def _cdn_available() -> bool:
+    with _cdn_lock:
+        return _cdn_failures < _CDN_MAX_FAILURES
+
+
+def _cdn_record(reachable: bool) -> None:
+    global _cdn_failures
+    with _cdn_lock:
+        if reachable:
+            _cdn_failures = 0
+            return
+        _cdn_failures += 1
+        tripped = _cdn_failures == _CDN_MAX_FAILURES
+    if tripped:
+        log.warning("Steam CDN unreachable — skipping artwork downloads this session")
+
+
+def _cdn_missed(key: str) -> bool:
+    with _cdn_lock:
+        return key in _cdn_misses
+
+
+def _cdn_mark_missed(key: str) -> None:
+    with _cdn_lock:
+        _cdn_misses.add(key)
+
+
+def reset_cdn_state() -> None:
+    """Re-enable artwork downloads, e.g. after the user reconnects and rescans."""
+    global _cdn_failures
+    with _cdn_lock:
+        _cdn_failures = 0
+        _cdn_misses.clear()
+
+
+def _http_get(url: str, timeout: int = _CDN_TIMEOUT) -> bytes | None:
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={"User-Agent": "Centurio"})
     try:
-        import urllib.request
-        req = urllib.request.Request(url, headers={"User-Agent": "Centurio"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if getattr(resp, "status", 200) != 200:
+                _cdn_record(True)
                 return None
-            return resp.read()
-    except Exception:
+            data = resp.read(_CDN_MAX_BYTES + 1)
+    except urllib.error.HTTPError:
+        # The server answered (404 for missing art) — the network itself is fine.
+        _cdn_record(True)
         return None
+    except Exception:
+        _cdn_record(False)
+        return None
+    _cdn_record(True)
+    return None if len(data) > _CDN_MAX_BYTES else data
 
 
 def _steam_cdn_art(appid: str, icon_cache: str | None) -> str | None:
@@ -334,10 +394,15 @@ def _steam_cdn_art(appid: str, icon_cache: str | None) -> str | None:
     out = os.path.join(icon_cache, f"steam_{appid}_capsule.jpg")
     if os.path.exists(out):
         return out
+    key = f"art:{appid}"
+    if _cdn_missed(key) or not _cdn_available():
+        return None
     for name in _STEAM_CDN_ART:
         for host in _STEAM_CDN_HOSTS:
+            if not _cdn_available():
+                return None
             data = _http_get(f"https://{host}/steam/apps/{appid}/{name}")
-            if data and len(data) >= 1024:  
+            if data and len(data) >= 1024:
                 try:
                     os.makedirs(icon_cache, exist_ok=True)
                     with open(out, "wb") as fh:
@@ -345,6 +410,7 @@ def _steam_cdn_art(appid: str, icon_cache: str | None) -> str | None:
                     return out
                 except OSError:
                     return None
+    _cdn_mark_missed(key)
     return None
 
 
@@ -400,8 +466,13 @@ def _steam_cdn_portrait(appid: str, icon_cache: str | None) -> str | None:
     out = os.path.join(icon_cache, f"steam_{appid}_portrait.jpg")
     if os.path.exists(out):
         return out
+    key = f"portrait:{appid}"
+    if _cdn_missed(key) or not _cdn_available():
+        return None
     for name in _STEAM_PORTRAIT_NAMES:
         for host in _STEAM_CDN_HOSTS:
+            if not _cdn_available():
+                return None
             data = _http_get(f"https://{host}/steam/apps/{appid}/{name}")
             if data and len(data) >= 1024:
                 try:
@@ -411,6 +482,7 @@ def _steam_cdn_portrait(appid: str, icon_cache: str | None) -> str | None:
                     return out
                 except OSError:
                     return None
+    _cdn_mark_missed(key)
     return None
 
 

@@ -1,0 +1,26 @@
+name: Tests
+
+# Runs the suite on every push and pull request. The pure-logic tests (store,
+# discovery, colours, queries) need nothing but the standard library; the UI
+# tests skip themselves when Flet is unavailable.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Flet (optional, enables the UI tests)
+        run: pip install "flet==0.28.3" || echo "Flet unavailable - UI tests will skip"
+
+      - name: Run test suite
+        run: python tests/test_centurio.py

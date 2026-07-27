@@ -27,6 +27,9 @@ jobs:
       - name: Install Flet CLI
         run: pip install "flet[all]==0.28.3"
 
+      - name: Run test suite
+        run: python tests/test_centurio.py
+
       - name: Generate icons
         run: python -m app.iconify
 

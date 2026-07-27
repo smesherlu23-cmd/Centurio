@@ -815,12 +815,11 @@ def open_settings_dialog(app_ui):
                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             padding=ft.padding.symmetric(10, 0), border=ft.border.only(top=ft.BorderSide(1, C.LINE_2)))
 
-    def export_cfg():
-        pass
-
-    def import_cfg():
-        pass
-
+    # Export/import are intentionally mothballed: Store.export_data and
+    # Store.import_data still exist and are covered by tests, but nothing in the
+    # UI reaches them. "Резервная копия" is the one data action that works, so
+    # it is the only one offered — a button that silently does nothing is worse
+    # than no button at all.
     def backup_cfg():
         try:
             p = store.backup()
@@ -838,9 +837,7 @@ def open_settings_dialog(app_ui):
         setting_switch("Сворачивать в трей", "minimize_to_tray"),
         setting_switch("Закрывать в трей", "close_to_tray"),
         ft.Container(height=12), _field_label("Данные и резервные копии"),
-        ft.Row([_outline_btn("Экспорт", ft.Icons.UPLOAD, export_cfg),
-                _outline_btn("Импорт", ft.Icons.DOWNLOAD, import_cfg),
-                _outline_btn("Резервная копия", ft.Icons.BACKUP, backup_cfg)],
+        ft.Row([_outline_btn("Резервная копия", ft.Icons.BACKUP, backup_cfg)],
                spacing=8, wrap=True, run_spacing=8),
         ft.Container(height=12),
         _outline_btn("Управление категориями", ft.Icons.FOLDER,
