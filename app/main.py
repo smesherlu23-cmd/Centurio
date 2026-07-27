@@ -8,7 +8,8 @@ from pathlib import Path
 import flet as ft
 
 from app import autostart, log
-from app.hotkeys import HotkeyManager, quick_bindings
+from app.debounce import Debounce
+from app.hotkeys import HotkeyManager, app_for_accel, quick_bindings
 from app.iconify import ensure_icons
 from app.launcher import Launcher
 from app.store import Store
@@ -129,10 +130,15 @@ def main(page: ft.Page):
                 ui.selected = -1
                 ui.refresh()
         elif e.ctrl and key.isdigit():
-            idx = int(key) - 1
-            quick = [a for a in store.state()["apps"] if a.get("quick")]
-            if 0 <= idx < len(quick):
-                ui._launch(quick[idx]["id"])
+            # pynput's listener doesn't swallow the keystroke, so a focused
+            # window sees it as well — handling it here too would launch twice.
+            # This branch is the fallback for when the combo isn't registered
+            # globally (no pynput, web mode, a rejected accelerator).
+            accel = f"Ctrl+{key}"
+            if not hotkeys.handles(accel):
+                app_id = app_for_accel(store.state()["apps"], accel)
+                if app_id:
+                    ui._launch(app_id)
         elif key in ("Arrow Right", "Arrow Down"):
             ui.move_selection(1)
         elif key in ("Arrow Left", "Arrow Up"):
@@ -142,30 +148,15 @@ def main(page: ft.Page):
     page.on_keyboard_event = on_key
 
 
-    _GEOMETRY_FLUSH_DELAY = 0.5  
-    geometry_timer_lock = threading.Lock()
-    geometry_timer = {"handle": None}
+    _GEOMETRY_FLUSH_DELAY = 0.5
 
-    def _flush_geometry_now():
-        with geometry_timer_lock:
-            geometry_timer["handle"] = None
+    def _flush_geometry():
         try:
             store.flush()
         except Exception:
             log.exception("flushing window geometry failed")
 
-    def _schedule_geometry_flush(immediate: bool):
-        with geometry_timer_lock:
-            if geometry_timer["handle"] is not None:
-                geometry_timer["handle"].cancel()
-                geometry_timer["handle"] = None
-            if immediate:
-                _flush_geometry_now()
-                return
-            t = threading.Timer(_GEOMETRY_FLUSH_DELAY, _flush_geometry_now)
-            t.daemon = True
-            geometry_timer["handle"] = t
-            t.start()
+    geometry_flush = Debounce(_GEOMETRY_FLUSH_DELAY, _flush_geometry)
 
     def save_window(flush: bool = False):
         try:
@@ -182,7 +173,7 @@ def main(page: ft.Page):
         except Exception:
             log.exception("saving window geometry failed")
             return
-        _schedule_geometry_flush(immediate=flush)
+        geometry_flush.schedule(immediate=flush)
 
     def on_win_event(e):
         if e.data in ("resized", "moved", "maximize", "unmaximize"):
@@ -221,7 +212,15 @@ def main(page: ft.Page):
     threading.Thread(target=_auto_rescan_loop, daemon=True).start()
 
     if not is_web:
-        autostart.set_autostart(store.state()["settings"].get("autostart", False))
+        # The installer's optional "launch at login" shortcut is invisible to
+        # the in-app toggle: sync() adopts it as an explicit preference and then
+        # leaves the registry key as the only mechanism, so the toggle and
+        # Windows can't disagree (and Centurio can't start twice at login).
+        want = bool(store.state()["settings"].get("autostart", False))
+        effective = autostart.sync(want)
+        if effective != want:
+            store.set_setting("autostart", effective)
+            ui.refresh()
         tray.start()
         if "--hidden" in sys.argv:
             _hide_window(page)

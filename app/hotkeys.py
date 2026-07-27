@@ -27,8 +27,6 @@ def to_pynput(accel: str) -> str:
             out.append(_MODS[p])
         elif len(p) == 1:
             out.append(p)
-        elif p.startswith("f") and p[1:].isdigit():
-            out.append(f"<{p}>")
         else:
             out.append(f"<{p}>")
     return "+".join(out)
@@ -40,6 +38,7 @@ class HotkeyManager:
         self._listener = None
         self.available = False
         self.rejected: list[str] = []
+        self.bound: set[str] = set()
 
     def _build_mapping(self, keyboard, bindings):
         """Turn accelerators into a pynput mapping, dropping the unusable ones.
@@ -48,11 +47,13 @@ class HotkeyManager:
         unparseable combo would take every other hotkey down with it. Validating
         one at a time keeps the good bindings working. Returns (mapping,
         rejected); kept separate from register() so it is testable without
-        starting a real keyboard listener.
+        starting a real keyboard listener. Also records the accepted
+        accelerators in self.bound, which handles() reads.
         """
         parse = getattr(keyboard.HotKey, "parse", None)
         mapping = {}
         rejected = []
+        self.bound = set()
         for accel, app_id in bindings:
             if not accel:
                 continue
@@ -71,11 +72,13 @@ class HotkeyManager:
                 log.warning("ignoring duplicate hotkey %r", accel)
                 continue
             mapping[combo] = (lambda aid=app_id: self._fire(aid))
+            self.bound.add(accel.strip().lower())
         return mapping, rejected
 
     def register(self, bindings) -> bool:
         self.stop()
         self.rejected = []
+        self.bound = set()
         try:
             from pynput import keyboard
         except Exception:
@@ -85,6 +88,7 @@ class HotkeyManager:
         mapping, self.rejected = self._build_mapping(keyboard, bindings)
         if not mapping:
             self.available = False
+            self.bound = set()
             return False
         try:
             self._listener = keyboard.GlobalHotKeys(mapping)
@@ -95,7 +99,17 @@ class HotkeyManager:
         except Exception:
             log.exception("failed to start the global hotkey listener")
             self.available = False
+            self.bound = set()
             return False
+
+    def handles(self, accel: str) -> bool:
+        """True when the global listener already owns this accelerator.
+
+        The listener does not swallow the keystroke, so a focused window sees
+        it too. Any in-window shortcut handler must check this first or the
+        same key press launches twice.
+        """
+        return self.available and (accel or "").strip().lower() in self.bound
 
     def _fire(self, app_id):
         try:
@@ -112,23 +126,47 @@ class HotkeyManager:
             self._listener = None
 
 
-def quick_bindings(apps) -> list[tuple[str, str]]:
-    bindings = []
-    used = set()
+QUICK_SLOTS = 9
+
+
+def quick_accels(apps) -> dict[str, str]:
+    """Map app id -> accelerator. The single source of truth for Ctrl+N.
+
+    Explicit per-app hotkeys win; the remaining "quick" apps take the free
+    Ctrl+1…Ctrl+9 slots in library order. A slot already claimed by an explicit
+    hotkey is skipped rather than burned, so no quick app is left with no
+    binding at all. The quick-row badge, the global listener and the in-window
+    fallback all read this map — what a tile promises is what actually fires.
+    """
+    accels: dict[str, str] = {}
+    used: set[str] = set()
     for a in apps:
-        hk = a.get("hotkey")
+        hk = (a.get("hotkey") or "").strip()
         if hk:
-            bindings.append((hk, a["id"]))
+            accels[a["id"]] = hk
             used.add(hk.lower())
-    i = 0
+    slot = 1
     for a in apps:
-        if not a.get("quick") or a.get("hotkey"):
+        if not a.get("quick") or a["id"] in accels:
             continue
-        i += 1
-        if i > 9:
+        while slot <= QUICK_SLOTS and f"ctrl+{slot}" in used:
+            slot += 1
+        if slot > QUICK_SLOTS:
             break
-        accel = f"Ctrl+{i}"
-        if accel.lower() in used:
-            continue
-        bindings.append((accel, a["id"]))
-    return bindings
+        accel = f"Ctrl+{slot}"
+        accels[a["id"]] = accel
+        used.add(accel.lower())
+        slot += 1
+    return accels
+
+
+def quick_bindings(apps) -> list[tuple[str, str]]:
+    return [(accel, app_id) for app_id, accel in quick_accels(apps).items()]
+
+
+def app_for_accel(apps, accel: str) -> str | None:
+    """Reverse lookup: which app does this accelerator launch, if any."""
+    want = (accel or "").strip().lower()
+    if not want:
+        return None
+    return next((aid for aid, ac in quick_accels(apps).items() if ac.lower() == want), None)

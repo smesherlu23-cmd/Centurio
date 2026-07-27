@@ -233,6 +233,113 @@ def test_hotkey_rejection():
     ok(not mapping and not rejected, "empty accelerators are skipped quietly")
 
 
+def test_hotkey_no_double_launch():
+    """A globally registered combo must be ignored by the in-window handler.
+
+    pynput doesn't swallow the keystroke, so a focused window sees it too —
+    both handlers firing used to launch two apps on one Ctrl+N.
+    """
+    from app.hotkeys import HotkeyManager
+
+    class FakeKeyboard:
+        class HotKey:
+            @staticmethod
+            def parse(combo):
+                return combo
+
+    mgr = HotkeyManager(on_trigger=lambda _aid: None)
+    mgr._build_mapping(FakeKeyboard(), [("Ctrl+1", "a"), ("Ctrl+2", "b")])
+    ok(mgr.bound == {"ctrl+1", "ctrl+2"}, "accepted accelerators are recorded")
+    ok(mgr.handles("Ctrl+1") is False, "no listener running -> the window handles the key")
+    mgr.available = True
+    ok(mgr.handles("Ctrl+1") is True and mgr.handles("ctrl+1") is True,
+       "a registered combo is claimed by the global listener")
+    ok(mgr.handles("Ctrl+7") is False, "an unregistered combo falls back to the window")
+    ok(mgr.handles("") is False, "an empty accelerator is never claimed")
+
+
+def _completes(fn, seconds=2.0) -> bool:
+    """Run fn on a throwaway thread; False if it is still stuck afterwards.
+
+    Keeps a deadlock regression a reported failure instead of a hung suite.
+    """
+    import threading
+    done = threading.Event()
+    threading.Thread(target=lambda: (fn(), done.set()), daemon=True).start()
+    return done.wait(seconds)
+
+
+def test_geometry_debounce():
+    """Debounce.schedule(immediate=True) must not deadlock.
+
+    The window-close handler takes this path: the previous inline version ran
+    the callback while holding its own non-reentrant lock, so closing the
+    window hung the app instead of saving the geometry and exiting.
+    """
+    import time
+
+    from app.debounce import Debounce
+
+    # Every immediate flush goes through _completes(), and each assertion gets
+    # its own instance: a deadlocked flush keeps that instance's lock forever.
+    calls = []
+    d = Debounce(0.05, lambda: calls.append(1))
+    ok(_completes(lambda: d.schedule(immediate=True)),
+       "immediate flush returns instead of deadlocking")
+    ok(len(calls) == 1, "immediate flush runs the callback once")
+
+    burst = []
+    d2 = Debounce(0.05, lambda: burst.append(1))
+    for _ in range(5):
+        d2.schedule()
+    ok(not burst, "debounced calls don't fire immediately")
+    time.sleep(0.25)
+    ok(len(burst) == 1, "a burst of calls collapses into one")
+
+    mixed = []
+    d3 = Debounce(0.05, lambda: mixed.append(1))
+    d3.schedule()
+    ok(_completes(lambda: d3.schedule(immediate=True)),
+       "immediate flush after a pending one returns")
+    time.sleep(0.2)
+    ok(len(mixed) == 1, "an immediate flush cancels the pending one")
+
+    dropped = []
+    d4 = Debounce(0.05, lambda: dropped.append(1))
+    d4.schedule()
+    d4.cancel()
+    time.sleep(0.2)
+    ok(not dropped, "cancel drops the pending call")
+
+
+def test_autostart():
+    from app import autostart
+
+    with tempfile.TemporaryDirectory() as d:
+        prev = os.environ.get("APPDATA")
+        os.environ["APPDATA"] = d
+        try:
+            link = autostart.startup_shortcut()
+            ok(link is not None and link.name == "Centurio.lnk",
+               "startup shortcut path derived from APPDATA")
+            ok(autostart.remove_startup_shortcut() is False,
+               "removing a missing shortcut is a quiet no-op")
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.write_text("shortcut")
+            ok(autostart.remove_startup_shortcut() is True and not link.exists(),
+               "the installer's startup shortcut is removed")
+        finally:
+            if prev is None:
+                os.environ.pop("APPDATA", None)
+            else:
+                os.environ["APPDATA"] = prev
+
+    if os.name != "nt":
+        ok(autostart.is_enabled() is False, "autostart reports off outside Windows")
+        ok(autostart.sync(True) is True, "sync keeps the stored preference outside Windows")
+        ok(autostart.sync(False) is False, "sync keeps 'off' outside Windows")
+
+
 def test_colors():
     c1, c2 = C.cover_colors(200)
     ok(c1.startswith("#") and len(c1) == 7, "cover color is hex")
@@ -347,16 +454,89 @@ def test_discovery():
 
 
 def test_hotkeys():
-    from app.hotkeys import to_pynput, quick_bindings
+    from app.hotkeys import app_for_accel, quick_accels, quick_bindings, to_pynput
     ok(to_pynput("Ctrl+Shift+1") == "<ctrl>+<shift>+1", "hotkey -> pynput format")
     ok(to_pynput("Alt+G") == "<alt>+g", "hotkey letter")
     ok(to_pynput("F5") == "<f5>", "hotkey F-key")
+    ok(to_pynput("Ctrl+Space") == "<ctrl>+<space>", "named key wrapped for pynput")
     apps = [{"id": "a", "quick": True, "hotkey": None},
             {"id": "b", "quick": True, "hotkey": "Ctrl+Shift+X"},
             {"id": "c", "quick": True, "hotkey": None}]
     binds = dict((aid, acc) for acc, aid in quick_bindings(apps))
     ok(binds["b"] == "Ctrl+Shift+X", "explicit hotkey kept")
     ok(binds["a"] == "Ctrl+1" and binds["c"] == "Ctrl+2", "auto Ctrl+N assigned")
+
+    # The quick-row badge, the global listener and the in-window fallback used
+    # to count slots independently and disagree about what Ctrl+N launches.
+    ok(quick_accels(apps) == binds, "badge labels and global bindings share one map")
+    ok(quick_accels(apps)["a"] == "Ctrl+1",
+       "an app with its own hotkey doesn't shift the Ctrl+N numbering")
+    ok(app_for_accel(apps, "ctrl+1") == "a", "Ctrl+N resolves to the app its badge shows")
+    ok(app_for_accel(apps, "Ctrl+9") is None, "an unassigned slot resolves to nothing")
+    ok(app_for_accel(apps, "") is None, "an empty accelerator resolves to nothing")
+
+    taken = [{"id": "x", "quick": True, "hotkey": "Ctrl+1"},
+             {"id": "y", "quick": True, "hotkey": None}]
+    ok(quick_accels(taken).get("y") == "Ctrl+2",
+       "a slot claimed by an explicit hotkey is skipped, not burned")
+
+    many = [{"id": str(i), "quick": True, "hotkey": None} for i in range(12)]
+    slots = quick_accels(many)
+    ok(len(slots) == 9 and "9" not in slots, "only nine quick slots are handed out")
+    ok(quick_accels([{"id": "n", "quick": False, "hotkey": None}]) == {},
+       "non-quick apps without a hotkey get no accelerator")
+
+
+def test_launcher_monitor_lifecycle():
+    """stop_monitor() used to crash the monitor thread with AttributeError."""
+    import threading
+    import time
+    import types
+
+    from app.launcher import Launcher
+
+    fake = types.ModuleType("psutil")
+    fake.process_iter = lambda attrs=None: []
+    prev_mod = sys.modules.get("psutil")
+    sys.modules["psutil"] = fake
+    crashes = []
+    prev_hook = threading.excepthook
+    threading.excepthook = lambda args: crashes.append(args)
+    try:
+        lch = Launcher()
+        ok(lch.start_monitor(interval=0.01) is True, "monitor starts when psutil is importable")
+        ok(lch.start_monitor(interval=0.01) is True, "start_monitor is idempotent")
+        time.sleep(0.05)
+        lch.stop_monitor()
+        time.sleep(0.15)
+        ok(not crashes, "stopping the monitor doesn't crash its thread")
+        ok(lch.start_monitor(interval=0.01) is True, "the monitor can be restarted after a stop")
+        lch.stop_monitor()
+        time.sleep(0.1)
+        ok(not crashes, "restart + stop stays clean")
+    finally:
+        threading.excepthook = prev_hook
+        if prev_mod is None:
+            sys.modules.pop("psutil", None)
+        else:
+            sys.modules["psutil"] = prev_mod
+
+
+def test_launcher_emit():
+    """Running-state changes are emitted once, and only when they change."""
+    from app.launcher import Launcher
+
+    seen = []
+    lch = Launcher(on_change=lambda ids: seen.append(sorted(ids)))
+    with lch._lock:
+        lch._name_ids = {"a"}
+    lch._emit()
+    lch._emit()
+    ok(seen == [["a"]], "an unchanged running set doesn't re-emit")
+    with lch._lock:
+        lch._name_ids = {"a", "b"}
+    lch._emit()
+    ok(seen == [["a"], ["a", "b"]], "a changed running set emits once")
 
 
 def test_launcher_index():
@@ -697,11 +877,16 @@ if __name__ == "__main__":
     test_store_corrupt_recovery()
     test_cdn_circuit_breaker()
     test_hotkey_rejection()
+    test_hotkey_no_double_launch()
+    test_geometry_debounce()
+    test_autostart()
     test_colors()
     test_icon()
     test_discovery()
     test_hotkeys()
     test_launcher_index()
+    test_launcher_monitor_lifecycle()
+    test_launcher_emit()
     test_color_parsing()
     test_launch_options()
     test_data_ops()

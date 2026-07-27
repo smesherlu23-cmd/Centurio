@@ -6,8 +6,9 @@ import flet as ft
 
 from . import colors as C
 from . import queries
-from .format import (  
+from .format import (
     CATEGORY_ICON_CHOICES, T, cat_icon, initials, plu_apps, plu_cats, time_ago)
+from .hotkeys import quick_accels
 from .images import ( 
     _img_size, _is_launcher_art, _MIN_ART_PX, app_hue, icon_image, img_b64)
 from .store import Store
@@ -489,7 +490,7 @@ class CenturioUI:
         if is_all and settings.get("show_quick_row"):
             quick = queries.quick_apps(apps)
             if quick:
-                controls += self._quick_row(quick)
+                controls += self._quick_row(quick, quick_accels(apps))
 
         sections = self._sections()
         if not sections or all(not s["apps"] for s in sections):
@@ -510,24 +511,30 @@ class CenturioUI:
         return queries.build_sections(self.apps(), self.categories(), self.filter,
                                       self.query, self.sort, self.running)
 
-    def _quick_row(self, quick):
+    def _quick_row(self, quick, accels):
         cards = []
-        for i, q in enumerate(quick):
-            key = q.get("hotkey") or f"Ctrl+{i + 1}"
-            card = ft.Container(
-                ft.Stack([
-                    ft.Column([
-                        self._chip_visual(q, 44, 20, 12),
-                        ft.Container(height=7),
-                        T(q["name"], size=13, weight=ft.FontWeight.W_600, color=C.TEXT,
-                                max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                        T(q.get("sub") or "", size=11, color=C.MUTED_2, max_lines=1,
-                                overflow=ft.TextOverflow.ELLIPSIS),
-                    ], spacing=0, tight=True),
+        for q in quick:
+            # accels comes from hotkeys.quick_accels() — the same map the global
+            # listener registers, so the badge can't promise a key that launches
+            # something else. Apps past the last free slot simply get no badge.
+            key = accels.get(q["id"])
+            layers = [
+                ft.Column([
+                    self._chip_visual(q, 44, 20, 12),
+                    ft.Container(height=7),
+                    T(q["name"], size=13, weight=ft.FontWeight.W_600, color=C.TEXT,
+                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    T(q.get("sub") or "", size=11, color=C.MUTED_2, max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS),
+                ], spacing=0, tight=True),
+            ]
+            if key:
+                layers.append(
                     ft.Container(T(key, size=10, color=C.MUTED_2, font_family="monospace"),
                                  right=0, top=0, bgcolor=C.PANEL_3, border=ft.border.all(1, C.LINE),
-                                 border_radius=5, padding=ft.padding.symmetric(1, 5)),
-                ]),
+                                 border_radius=5, padding=ft.padding.symmetric(1, 5)))
+            card = ft.Container(
+                ft.Stack(layers),
                 width=152, bgcolor=C.PANEL, border=ft.border.all(1, C.LINE), border_radius=12,
                 padding=ft.padding.only(14, 14, 14, 12),
                 on_click=lambda e, i2=q["id"]: self._launch(i2),

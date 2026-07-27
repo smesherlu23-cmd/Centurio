@@ -33,15 +33,19 @@ class Launcher:
             return app_id in self._procs or app_id in self._name_ids
 
     def _emit(self):
-        ids = frozenset(self.running_ids())
-        if ids == self._last_emit:
-            return
-        self._last_emit = ids
+        # The comparison and the update belong to the same critical section:
+        # the monitor thread and the per-process watchers both land here, and
+        # reading _last_emit outside the lock could drop a transition.
+        with self._lock:
+            ids = frozenset(self._procs) | frozenset(self._name_ids)
+            if ids == self._last_emit:
+                return
+            self._last_emit = ids
         if self.on_change:
             try:
                 self.on_change(list(ids))
             except Exception:
-                pass
+                log.exception("running-apps callback failed")
 
     def set_apps(self, apps):
         index: dict[str, set[str]] = {}
@@ -62,16 +66,21 @@ class Launcher:
 
     def start_monitor(self, interval: float = 4.0):
         try:
-            import psutil 
+            import psutil  # noqa: F401
         except Exception:
             return False
-        if self._monitor_stop:
-            return True
-        self._monitor_stop = threading.Event()
+        with self._lock:
+            if self._monitor_stop:
+                return True
+            stop = threading.Event()
+            self._monitor_stop = stop
 
         def loop():
             import psutil
-            while not self._monitor_stop.is_set():
+            # Bound to the local event, never to self._monitor_stop:
+            # stop_monitor() clears that attribute, and re-reading it here
+            # raised AttributeError inside the thread on every shutdown.
+            while not stop.is_set():
                 try:
                     names = set()
                     for p in psutil.process_iter(["name"]):
@@ -87,14 +96,16 @@ class Launcher:
                     self._emit()
                 except Exception:
                     log.exception("process monitor iteration failed")
-                self._monitor_stop.wait(interval)
+                stop.wait(interval)
         threading.Thread(target=loop, daemon=True).start()
         return True
 
     def stop_monitor(self):
-        if self._monitor_stop:
-            self._monitor_stop.set()
-            self._monitor_stop = None
+        with self._lock:
+            stop, self._monitor_stop = self._monitor_stop, None
+        if stop:
+            stop.set()
+
     def _is_executable(self, path: str) -> bool:
         return Path(path).suffix.lower() in _EXE_EXTS
 
