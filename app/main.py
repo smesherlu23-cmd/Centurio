@@ -15,7 +15,7 @@ from app.store import Store
 from app.tray import TrayController
 from app.ui import CenturioUI
 
-ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 
 
 def main(page: ft.Page):
