@@ -109,7 +109,7 @@ def open_context_menu(app_ui, app):
                 T("Удалить", size=13.5, color="#e88", weight=ft.FontWeight.W_500)],
                spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         padding=ft.padding.symmetric(10, 12), border_radius=9, width=300,
-        on_click=close_then(do_delete))
+        on_click=lambda e: close_then(do_delete)())
     app_ui._hoverable(delete_btn, None, C.PANEL_2)
 
     dialog = ft.AlertDialog(
