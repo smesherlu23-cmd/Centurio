@@ -530,6 +530,66 @@ def test_autostart():
         ok(autostart.sync(False) is False, "sync keeps 'off' outside Windows")
 
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _read(*parts) -> str:
+    with open(os.path.join(_ROOT, *parts), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_packaging_metadata():
+    """The version and the dependency list live in files that can't import
+    each other, so the check that they agree belongs here."""
+    import re
+
+    from app import __version__
+
+    ok(re.fullmatch(r"\d+\.\d+\.\d+", __version__), "app.__version__ is a plain version number")
+
+    pyproject = _read("pyproject.toml")
+    installer = _read("installer", "centurio.iss")
+    ui_source = _read("app", "ui.py")
+
+    quoted = re.escape(f'"{__version__}"')
+    ok(re.search(rf"^version = {quoted}$", pyproject, re.M),
+       "pyproject [project].version matches app.__version__")
+    ok(re.search(rf"^build_version = {quoted}$", pyproject, re.M),
+       "pyproject [tool.flet].build_version matches app.__version__")
+    ok(re.search(rf"#define MyAppVersion {quoted}", installer),
+       "the installer's MyAppVersion matches app.__version__")
+    ok(__version__ not in ui_source, "the sidebar footer renders the version instead of repeating it")
+
+    readme = re.search(r'^readme = "([^"]+)"$', pyproject, re.M)
+    ok(readme is not None, "pyproject declares a readme")
+    ok(readme and os.path.exists(os.path.join(_ROOT, readme.group(1))),
+       "the declared readme exists — otherwise `pip install .` fails on it")
+
+    block = re.search(r"^dependencies = \[(.*?)^\]", pyproject, re.M | re.S)
+    ok(block is not None, "pyproject declares dependencies")
+    declared = set(re.findall(r'"([^"]+)"', block.group(1) if block else ""))
+    required = {line.strip() for line in _read("requirements.txt").splitlines()
+                if line.strip() and not line.startswith("#")}
+    ok(declared == required,
+       f"requirements.txt and pyproject agree (pyproject-only: {declared - required}, "
+       f"requirements-only: {required - declared})")
+
+
+def test_single_entry_point():
+    """app/main.py builds the page; only the root main.py launches it."""
+    root_main = _read("main.py")
+    page_module = _read("app", "main.py")
+    ok('if __name__ == "__main__"' in root_main and "ft.app(" in root_main,
+       "the root main.py starts the app")
+    # app/main.py still reads CENTURIO_WEB — that's is_web inside the page
+    # builder, not a second launcher.
+    ok('if __name__ == "__main__"' not in page_module,
+       "app/main.py doesn't carry a second entry point")
+    code = "\n".join(line for line in page_module.splitlines()
+                     if not line.lstrip().startswith("#"))
+    ok("ft.app(" not in code, "app/main.py doesn't call ft.app()")
+
+
 def test_colors():
     c1, c2 = C.cover_colors(200)
     ok(c1.startswith("#") and len(c1) == 7, "cover color is hex")
@@ -734,10 +794,25 @@ def test_launcher_index():
     lch = Launcher()
     lch.set_apps([{"id": "1", "path": r"C:\x\chrome.exe"},
                   {"id": "2", "path": "steam://rungameid/730"},
-                  {"id": "3", "path": r"C:\tools\vim.bat"}])
+                  {"id": "3", "path": r"C:\tools\vim.bat"},
+                  {"id": "4", "path": r"C:\tools\build.cmd"},
+                  {"id": "5", "path": r"C:\old\legacy.com"},
+                  {"id": "6", "path": r"C:\docs\notes.txt"}])
     keys = set(lch._exe_index)
     ok("chrome.exe" in keys and "vim.bat" in keys, "exe index built (Windows exe/bat)")
+    ok("build.cmd" in keys and "legacy.com" in keys,
+       "every extension in _EXE_EXTS is indexed, not a copy of the list")
+    ok("notes.txt" not in keys, "non-executables stay out of the index")
     ok(all("steam" not in k for k in keys), "URL launchers excluded from index")
+
+    # set_apps used to carry its own copy of the extension list.
+    from app import launcher as launcher_module
+    launcher_module._EXE_EXTS.add(".ps1")
+    try:
+        lch.set_apps([{"id": "7", "path": r"C:\s\script.ps1"}])
+        ok("script.ps1" in lch._exe_index, "the index follows _EXE_EXTS, not a private copy")
+    finally:
+        launcher_module._EXE_EXTS.discard(".ps1")
 
     lch.set_apps([{"id": "g", "path": "steam://rungameid/730", "track_exe": "cs2.exe"},
                   {"id": "h", "path": "C:/x/Chrome.exe", "track_exe": None}])
@@ -868,6 +943,14 @@ def test_queries():
 
         vs.set_filter("favorites")
         ok(store.state()["settings"]["view_filter"] == "favorites", "set_filter persists immediately")
+
+        # is_all_view drives the rail's "Главное меню" highlight, and it used
+        # to light up for every non-category filter.
+        vs.set_filter("all")
+        ok(vs.is_all_view() is True, "the all-apps view is the all view")
+        for other in ("favorites", "recent", "running", f"category:{wid}"):
+            vs.set_filter(other)
+            ok(vs.is_all_view() is False, f"{other} is not the all view")
 
         vs.move_selection(1, 3)
         ok(vs.selected == 0, "move_selection picks the first item from nothing selected")
@@ -1088,6 +1171,8 @@ if __name__ == "__main__":
     test_hotkey_no_double_launch()
     test_geometry_debounce()
     test_autostart()
+    test_packaging_metadata()
+    test_single_entry_point()
     test_colors()
     test_icon()
     test_discovery()

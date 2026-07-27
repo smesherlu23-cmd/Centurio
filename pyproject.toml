@@ -4,16 +4,20 @@ version = "1.2.0"
 description = "Centurio — персональная, всегда доступная из трея горячая панель приложений."
 readme = "README.md"
 requires-python = ">=3.9"
+# Keep in sync with requirements.txt. The [desktop] extra ships the runtime
+# that opens the window — plain "flet" is enough to import the module (which is
+# all the tests need) but not to run the app.
 dependencies = [
-    "flet==0.28.3",
+    "flet[desktop]==0.28.3",
     "pystray>=0.19.5",
     "Pillow>=10.0.0",
     "pynput>=1.7.6",
     "psutil>=5.9.0",
 ]
 
-# Configuration for `flet build windows` — Windows-only app (see README/BUILD.md).
-# See docs/BUILD.md for the full build + installer recipe.
+# Configuration for `flet build windows` — Windows-only app.
+# The full build + installer recipe lives in README.md ("Сборка").
+# version/build_version must match app.__version__ (tests check this).
 [tool.flet]
 org = "com.centurio"
 product = "Centurio"

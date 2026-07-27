@@ -1,4 +1,7 @@
-"""Попроавить нужно
+"""Presentation helpers: fonts, icon names, Russian pluralisation, timestamps.
+
+T() is the project's ft.Text wrapper — it picks the Inter weight that matches
+the requested FontWeight, because Flet loads each weight as a separate family.
 """
 from __future__ import annotations
 

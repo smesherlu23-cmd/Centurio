@@ -56,8 +56,10 @@ class Launcher:
                 names.add(track)
             path = a.get("path") or ""
             if path and "://" not in path:
-                base = ntpath.basename(path).lower() 
-                if base.endswith((".exe", ".bat", ".cmd", ".com")):
+                # ntpath, not os.path: the stored paths are Windows ones even
+                # when the tests run elsewhere.
+                base = ntpath.basename(path).lower()
+                if ntpath.splitext(base)[1] in _EXE_EXTS:
                     names.add(base)
             for base in names:
                 index.setdefault(base, set()).add(a["id"])

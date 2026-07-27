@@ -76,10 +76,11 @@ def _is_windows_system(name: str, path: str) -> bool:
 
 
 def _md5(text: str) -> str:
-    return hashlib.md5(text.lower().encode("utf-8")).hexdigest()
+    # Cache-file naming only — see the note in store.hue_from_string.
+    return hashlib.md5(text.lower().encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
-#  Винда
+# ---- Windows: Start Menu shortcuts, uninstall keys, App Paths ----
 _PS_ICON_FUNCS = r'''
 $ErrorActionPreference='SilentlyContinue'
 try{[Console]::OutputEncoding=[System.Text.Encoding]::UTF8}catch{}
@@ -150,7 +151,8 @@ if($r){ Write-Output $r }
 
 
 def _run_powershell(script: str, timeout: int = 60):
-    # декод
+    # errors="replace": PowerShell can emit bytes that aren't valid UTF-8 for
+    # an app name, and a decode error must not lose the whole scan.
     return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
                           capture_output=True, text=True, encoding="utf-8", errors="replace",
                           timeout=timeout, creationflags=0x08000000)  # CREATE_NO_WINDOW
@@ -206,7 +208,7 @@ def _win_extract_one(path: str, icon_cache: str) -> str | None:
     return out if out and os.path.exists(out) else None
 
 
-# стим
+# ---- Steam ----
 _STEAM_SKIP_ID = {"228980"} 
 _STEAM_SKIP_NAME = ("steamworks common", "proton", "steam linux runtime", "steamvr media")
 
@@ -219,7 +221,13 @@ _STEAM_EXE_JUNK = ("unins", "uninstall", "vcredist", "vc_redist", "dxsetup", "dx
 
 
 def _steam_game_exe(lib: str, installdir: str | None, name: str) -> str | None:
-    """пока только для винды, но можно высрать из этого и под линукс и мак, но потом мб
+    """Guess which .exe in a game folder is the game itself.
+
+    Used for the "Запущено" indicator: a steam:// URL says nothing about the
+    process that ends up running. Picks the largest executable whose filename
+    shares a word with the game's name, ignoring the usual installer/redist
+    company it keeps. Windows-only for now — a Linux/macOS variant would need
+    a different candidate list, not just a different path separator.
     """
     if not installdir:
         return None
@@ -526,7 +534,7 @@ def _steam_games(icon_cache: str | None) -> list[dict]:
     return games
 
 
-# епик 
+# ---- Epic Games ----
 def _epic_games(icon_cache: str | None) -> list[dict]:
     if os.name != "nt":
         return []
@@ -568,7 +576,7 @@ def _epic_games(icon_cache: str | None) -> list[dict]:
     return games
 
 
-# нннннннннннннн
+# ---- Icons for apps the user adds by hand ----
 def extract_icon(path: str, icon_cache: str | None) -> str | None:
     if not path or not icon_cache:
         return None

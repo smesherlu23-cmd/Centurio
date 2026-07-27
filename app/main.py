@@ -260,11 +260,7 @@ def _quit(page):
     except Exception:
         os._exit(0)
 
-
-if __name__ == "__main__":
-    web = os.environ.get("CENTURIO_WEB") == "1"
-    port = int(os.environ.get("CENTURIO_PORT", "0") or 0)
-    if web:
-        ft.app(target=main, view=None, port=port or 8550, assets_dir=str(ASSETS_DIR))
-    else:
-        ft.app(target=main, assets_dir=str(ASSETS_DIR))
+# The launcher lives in the repository-root main.py — this module only builds
+# the page. Running `python app/main.py` never worked anyway (its imports are
+# absolute), so a second copy of the ft.app() call here was one more place to
+# forget when the startup options change.

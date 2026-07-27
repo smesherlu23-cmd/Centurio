@@ -18,7 +18,13 @@ class ViewState:
         self.selected = -1
 
     def is_all_view(self):
-        return not self.filter.startswith("category:")
+        """True only for the real "all apps" view.
+
+        Drives the rail's "Главное меню" highlight, which used to light up for
+        favourites/recent/running too — those are sidebar filters and have
+        their own highlight there.
+        """
+        return self.filter == "all"
 
     def persist(self):
         # One file write for the three view settings, not three: every click on

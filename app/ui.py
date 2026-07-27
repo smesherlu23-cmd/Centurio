@@ -4,6 +4,7 @@ import os
 
 import flet as ft
 
+from . import __version__
 from . import colors as C
 from . import queries
 from .format import (
@@ -422,7 +423,8 @@ class CenturioUI:
                 toggle("Автозапуск с Windows", "autostart"),
                 toggle("Сворачивать в трей", "minimize_to_tray"),
                 ft.Container(ft.Row([T("Centurio", size=11, color=C.MUTED_3, font_family="monospace"),
-                                     T("v1.2.0", size=11, color=C.MUTED_3, font_family="monospace")],
+                                     T(f"v{__version__}", size=11, color=C.MUTED_3,
+                                       font_family="monospace")],
                                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                              padding=ft.padding.only(10, 6, 10, 0)),
             ], spacing=2),
@@ -831,7 +833,6 @@ class CenturioUI:
                 found = discovery.discover_apps(cache)
                 existing = {(a.get("path") or "").lower() for a in self.store.state()["apps"]}
                 new = [a for a in found if (a.get("path") or "").lower() not in existing]
-                self._new_installed = len(new)
                 self._on_library_changed()
                 if new:
                     self._toast(f"Найдено новых программ: {len(new)} — откройте «Добавить приложение»")

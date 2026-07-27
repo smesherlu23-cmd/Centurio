@@ -43,7 +43,9 @@ CATEGORY_ICONS = ["work", "brush", "sports_esports", "code", "folder",
 
 
 def hue_from_string(text: str) -> int:
-    digest = hashlib.md5(str(text).lower().encode("utf-8")).digest()
+    # usedforsecurity=False: this only picks a stable tile colour, and without
+    # the flag hashlib.md5 refuses to run on a FIPS-enabled Windows install.
+    digest = hashlib.md5(str(text).lower().encode("utf-8"), usedforsecurity=False).digest()
     return ((digest[0] << 8) | digest[1]) % 360
 
 
