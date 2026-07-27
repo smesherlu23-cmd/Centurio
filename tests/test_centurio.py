@@ -130,6 +130,196 @@ def test_store_concurrency():
         ok(not leftovers, "no temp files are left behind")
 
 
+def test_store_load_validation():
+    """JSON that parses but carries junk must not blank the window.
+
+    Corrupt files are quarantined by _load; this is the other half — records
+    the UI indexes without a guard (id, name) or sorts on (order, added_at).
+    """
+    import json
+
+    from app.store import DEFAULT_SETTINGS
+
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "data.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({
+                "version": "one",
+                "categories": [{"id": "work", "name": "Работа", "order": 0},
+                               {"name": "no id at all"},
+                               "not even a dict",
+                               {"id": "dup", "name": "First"},
+                               {"id": "dup", "name": "Second"}],
+                "apps": [
+                    {"id": "good", "name": "Notion", "path": "/n", "order": 1},
+                    {"name": "no id"},
+                    {"id": "", "name": "empty id"},
+                    None,
+                    {"id": "nameless", "path": "/x"},
+                    {"id": "junk-numbers", "name": "Junk", "order": "first",
+                     "added_at": None, "last_launched": "yesterday", "hue": "blue"},
+                    {"id": "good", "name": "Duplicate id"},
+                ],
+                "settings": ["not", "an", "object"],
+            }, fh)
+
+        state = Store(path).state()
+        apps = [a for a in state["apps"] if isinstance(a, dict)]
+        ok([a.get("id") for a in apps] == ["good", "nameless", "junk-numbers"],
+           "unusable app records are dropped")
+        ok(all(isinstance(a.get("name"), str) and a.get("name") for a in apps),
+           "every surviving app has a usable name")
+        by_id = {a.get("id"): a for a in apps}
+        ok(by_id.get("nameless", {}).get("name") == "Без названия",
+           "a nameless record gets the same placeholder as a new app")
+        junk = by_id.get("junk-numbers", {})
+        ok(all(isinstance(junk.get(k), int) for k in ("order", "added_at", "last_launched")),
+           "non-numeric sort keys are coerced")
+        ok(isinstance(junk.get("hue"), int) and 0 <= junk.get("hue", -1) < 360,
+           "a bad hue is re-derived")
+        cats = [c for c in state["categories"] if isinstance(c, dict)]
+        ok([c.get("id") for c in cats] == ["work", "dup"],
+           "unusable categories are dropped and ids deduped")
+        ok(state["settings"] == dict(DEFAULT_SETTINGS),
+           "settings that aren't an object fall back to the defaults")
+        ok(state["version"] == 1, "a non-numeric version falls back to 1")
+
+        # The sanitised library must survive the operations the UI performs.
+        from app import queries
+        sections = queries.build_sections(state["apps"], state["categories"], "all", "", "alpha", set())
+        ok(queries.flatten_sections(sections), "sanitised records render into sections")
+        for sort in queries.SORT_KEYS:
+            queries.sort_apps(state["apps"], sort)
+        ok(True, "every sort order works on the sanitised records")
+
+
+def test_store_write_failure():
+    """A failing save must not take down the action that triggered it."""
+    import builtins
+    import contextlib
+
+    real_open = builtins.open
+
+    @contextlib.contextmanager
+    def disk_full(store):
+        def failing_open(file, *a, **kw):
+            if str(file).startswith(str(store.path)):
+                raise OSError(28, "No space left on device")
+            return real_open(file, *a, **kw)
+
+        builtins.open = failing_open
+        try:
+            yield
+        finally:
+            builtins.open = real_open
+
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "data.json")
+        s = Store(path)
+        s.add_app({"name": "Before", "path": "/b"})
+
+        reported = []
+        s.on_error = reported.append
+        with disk_full(s):
+            try:
+                app, raised = s.add_app({"name": "During outage", "path": "/x"}), None
+            except Exception as exc:
+                app, raised = None, exc
+            ok(raised is None, "a failing save doesn't propagate out of add_app")
+            ok(app and app["name"] == "During outage",
+               "add_app still returns its record when the save fails")
+            ok(s.flush() is False, "flush reports the failure")
+            ok(len(reported) == 1, "only the first failure of a streak is reported")
+            ok("No space left" in reported[0], "the reported message carries the OS error")
+            ok(s.write_error is not None, "the failure is remembered")
+            ok(len(s.state()["apps"]) == 2, "the in-memory library keeps the change")
+            ok(not any(n.endswith(".tmp") for n in os.listdir(d)), "no temp file is left behind")
+
+        ok(s.flush() is True, "a later save succeeds again")
+        ok(s.write_error is None, "the remembered failure is cleared")
+        ok(len(Store(path).state()["apps"]) == 2, "the recovered save reaches disk")
+
+        broken = Store(os.path.join(d, "other.json"))
+        broken.on_error = lambda msg: 1 / 0
+        with disk_full(broken):
+            ok(broken.flush() is False, "a throwing error callback doesn't break the save path")
+
+
+def test_store_batched_writes():
+    """Bulk paths write the file once, not once per record."""
+    from app import discovery
+    from app.view_state import ViewState
+
+    with tempfile.TemporaryDirectory() as d:
+        s = Store(os.path.join(d, "data.json"))
+        for i in range(20):
+            s.add_app({"name": f"Game{i}", "path": f"steam://rungameid/{i}"})
+
+        writes = {"n": 0}
+        real_persist = s._persist
+
+        def counting_persist():
+            writes["n"] += 1
+            return real_persist()
+        s._persist = counting_persist
+
+        changed = discovery.backfill_icons(s, None)
+        ok(changed is True, "backfill patches the steam apps")
+        ok(writes["n"] == 1, "backfilling 20 apps writes the file once, not 20 times")
+        ok(all(a.get("sub") == "Steam" for a in Store(os.path.join(d, "data.json")).state()["apps"]),
+           "the batched changes reach disk")
+
+        writes["n"] = 0
+        ok(discovery.backfill_icons(s, None) is False, "a second backfill has nothing to do")
+        ok(writes["n"] == 0, "an unchanged backfill doesn't write at all")
+
+        writes["n"] = 0
+        ViewState(s).persist()
+        ok(writes["n"] == 1, "the three view settings are stored in one write")
+
+        writes["n"] = 0
+        s.update_app(s.state()["apps"][0]["id"], {"favorite": True})
+        ok(writes["n"] == 1, "a single update still writes immediately")
+
+
+def test_image_cache_bounded():
+    """The base64 caches used to keep every image the session ever touched."""
+    try:
+        from app import images
+    except Exception as exc:  # flet only — a missing ceiling must not skip
+        print("SKIP image cache test (Flet unavailable):", exc)
+        return
+    _IMG_B64_CACHE, _LruCache, img_b64 = (images._IMG_B64_CACHE, images._LruCache, images.img_b64)
+
+    cache = _LruCache(max_entries=3)
+    for i in range(10):
+        cache.put(f"k{i}", 1.0, f"v{i}", 1)
+    ok(len(cache) == 3, "the entry ceiling is enforced")
+    ok(cache.get("k9", 1.0) == "v9" and cache.get("k0", 1.0) is None,
+       "the least recently used entries are the ones evicted")
+    ok(cache.get("k9", 2.0) is None, "a changed mtime invalidates the entry")
+
+    byte_capped = _LruCache(max_entries=100, max_bytes=10)
+    for i in range(5):
+        byte_capped.put(f"k{i}", 1.0, "x" * 4, 4)
+    ok(len(byte_capped) <= 3, "the byte ceiling is enforced independently of the count")
+
+    ok(_IMG_B64_CACHE.max_entries <= 1024 and bool(_IMG_B64_CACHE.max_bytes),
+       "the shared base64 cache declares a finite ceiling")
+    _IMG_B64_CACHE.clear()
+    with tempfile.TemporaryDirectory() as d:
+        encoded = []
+        for i in range(min(_IMG_B64_CACHE.max_entries, 200) + 20):
+            p = os.path.join(d, f"i{i}.png")
+            iconify.generate_icon(p, 8)
+            encoded.append(img_b64(p))
+        ok(all(encoded), "every image encodes")
+        ok(len(_IMG_B64_CACHE) <= _IMG_B64_CACHE.max_entries,
+           "img_b64 never grows past its ceiling")
+        ok(img_b64(p) == encoded[-1], "an evicting cache still returns correct data")
+    _IMG_B64_CACHE.clear()
+
+
 def test_store_corrupt_recovery():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "data.json")
@@ -867,13 +1057,31 @@ def test_ui_settings_cache():
 
         ok(many_apps_calls == few_apps_calls,
            "store.state() call count during refresh() doesn't grow with the number of apps")
-        ok(many_apps_calls < 10,
-           "refresh() reads the store a small, constant number of times, not once per tile")
+        ok(many_apps_calls == 1,
+           "refresh() takes exactly one snapshot of the store")
+        ok(ui._snapshot is None, "the snapshot is dropped when the refresh pass ends")
+
+        calls["n"] = 0
+        ui.view.set_query("app1")
+        ui.refresh(content_only=True)
+        ok(calls["n"] == 1, "a keystroke in the search box costs one store read")
+
+        # Outside a refresh pass nothing may serve stale data from the snapshot.
+        ui.view.set_query("")
+        calls["n"] = 0
+        before = len(ui.apps())
+        store.add_app({"name": "Fresh", "path": "/x/fresh", "category_id": "work"})
+        ok(len(ui.apps()) == before + 1, "reads outside a refresh go to the store")
+        ok(calls["n"] >= 2, "those reads aren't served from a stale snapshot")
 
 
 if __name__ == "__main__":
     test_store()
     test_store_concurrency()
+    test_store_load_validation()
+    test_store_write_failure()
+    test_store_batched_writes()
+    test_image_cache_bounded()
     test_store_corrupt_recovery()
     test_cdn_circuit_breaker()
     test_hotkey_rejection()

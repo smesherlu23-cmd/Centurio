@@ -21,8 +21,10 @@ class ViewState:
         return not self.filter.startswith("category:")
 
     def persist(self):
-        self.store.set_setting("view_filter", self.filter)
-        self.store.set_setting("view_sort", self.sort)
+        # One file write for the three view settings, not three: every click on
+        # a filter, a sort or a view mode goes through here.
+        self.store.set_setting("view_filter", self.filter, persist=False)
+        self.store.set_setting("view_sort", self.sort, persist=False)
         self.store.set_setting("view_mode", self.mode)
 
     def set_filter(self, f):

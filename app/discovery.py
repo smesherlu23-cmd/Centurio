@@ -603,6 +603,11 @@ ICON_SCHEMA = 7
 
 
 def backfill_icons(store, icon_cache: str | None = None, refresh: bool = False) -> bool:
+    """Fill in missing icons/posters/sub-labels for the whole library.
+
+    Patches are batched: each update_app() used to rewrite the entire JSON
+    file, so a refresh pass over N apps meant N full-file writes.
+    """
     changed = False
     for app in list(store.state().get("apps", [])):
         patch = {}
@@ -626,6 +631,8 @@ def backfill_icons(store, icon_cache: str | None = None, refresh: bool = False) 
             if poster and poster != app.get("poster"):
                 patch["poster"] = poster
         if patch:
-            store.update_app(app["id"], patch)
+            store.update_app(app["id"], patch, persist=False)
             changed = True
+    if changed:
+        store.flush()
     return changed

@@ -47,6 +47,61 @@ def hue_from_string(text: str) -> int:
     return ((digest[0] << 8) | digest[1]) % 360
 
 
+def _as_int(value, fallback: int = 0) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else fallback
+
+
+def _clean_app(item, index: int) -> dict | None:
+    """Normalise one stored app record, or None if it is unusable.
+
+    Everything downstream indexes app["id"] and app["name"] without a guard and
+    sorts on the numeric fields, so a single hand-edited or half-written record
+    used to be enough to blank the whole window with a KeyError/TypeError.
+    """
+    if not isinstance(item, dict):
+        return None
+    app_id = item.get("id")
+    if not isinstance(app_id, str) or not app_id.strip():
+        return None
+    rec = dict(item)
+    rec["id"] = app_id
+    name = rec.get("name")
+    rec["name"] = name.strip() if isinstance(name, str) and name.strip() else "Без названия"
+    rec["path"] = rec["path"] if isinstance(rec.get("path"), str) else ""
+    rec["order"] = _as_int(rec.get("order"), index)
+    for key in ("added_at", "last_launched", "launch_count"):
+        rec[key] = _as_int(rec.get(key))
+    hue = _as_int(rec.get("hue"), -1)
+    rec["hue"] = hue if 0 <= hue < 360 else hue_from_string(rec["name"] or rec["path"])
+    return rec
+
+
+def _clean_category(item, index: int) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    cat_id = item.get("id")
+    if not isinstance(cat_id, str) or not cat_id.strip():
+        return None
+    rec = dict(item)
+    rec["id"] = cat_id
+    name = rec.get("name")
+    rec["name"] = name.strip() if isinstance(name, str) and name.strip() else "Категория"
+    rec["order"] = _as_int(rec.get("order"), index)
+    return rec
+
+
+def _clean_records(raw, clean) -> list[dict]:
+    out: list[dict] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw if isinstance(raw, list) else []):
+        rec = clean(item, index)
+        if rec is None or rec["id"] in seen:
+            continue
+        seen.add(rec["id"])
+        out.append(rec)
+    return out
+
+
 DATA_FILENAME = "centurio-data.json"
 
 
@@ -59,6 +114,10 @@ class Store:
     def __init__(self, path: Path | str | None = None):
         self.path = Path(path) if path else default_data_path()
         self._lock = threading.RLock()
+        # Set by the UI to surface save failures; called with the OS error text
+        # on the first failure of a streak, not on every write.
+        self.on_error = None
+        self.write_error: str | None = None
         self.data = self._load()
 
     def _defaults(self) -> dict:
@@ -86,12 +145,22 @@ class Store:
             self._quarantine_corrupt(raw)
             return self._defaults()
 
-        cats = parsed.get("categories")
+        return self._sanitize(parsed)
+
+    def _sanitize(self, parsed: dict) -> dict:
+        """Turn whatever is on disk into a library the UI can render.
+
+        Corrupt JSON is quarantined by _load; this is the other half — JSON
+        that parses but carries junk (a record without an id, a string where a
+        timestamp belongs, settings that aren't even an object).
+        """
+        cats = _clean_records(parsed.get("categories"), _clean_category)
+        settings = parsed.get("settings")
         return {
-            "version": parsed.get("version", 1),
-            "categories": cats if isinstance(cats, list) and cats else copy.deepcopy(DEFAULT_CATEGORIES),
-            "apps": parsed.get("apps", []) if isinstance(parsed.get("apps"), list) else [],
-            "settings": {**DEFAULT_SETTINGS, **(parsed.get("settings") or {})},
+            "version": _as_int(parsed.get("version"), 1),
+            "categories": cats or copy.deepcopy(DEFAULT_CATEGORIES),
+            "apps": _clean_records(parsed.get("apps"), _clean_app),
+            "settings": {**DEFAULT_SETTINGS, **(settings if isinstance(settings, dict) else {})},
         }
 
     def _quarantine_corrupt(self, raw: str) -> None:
@@ -103,12 +172,46 @@ class Store:
         except OSError:
             log.exception("failed to save corrupted data file copy: %s", dest)
 
-    def _persist(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(self.data, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp, self.path)
+    def _persist(self) -> bool:
+        """Write the library out. Never raises.
+
+        A failing save (full disk, the file held by a backup tool, a profile
+        that went away) used to propagate straight into the Flet event handler
+        that triggered it: the click died with a traceback and the user was
+        never told the data hadn't been saved. Now the caller keeps working and
+        on_error reports the first failure of a streak.
+        """
+        tmp = None
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self.data, fh, ensure_ascii=False, indent=2)
+            os.replace(tmp, self.path)
+        except (OSError, ValueError, TypeError) as exc:
+            log.exception("saving the data file failed: %s", self.path)
+            self._discard_temp(tmp)
+            self._report_write_error(str(exc))
+            return False
+        self.write_error = None
+        return True
+
+    def _discard_temp(self, tmp: Path | None) -> None:
+        if tmp is None:
+            return
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+    def _report_write_error(self, message: str) -> None:
+        first = self.write_error is None
+        self.write_error = message
+        if first and self.on_error:
+            try:
+                self.on_error(message)
+            except Exception:
+                log.exception("store error callback failed")
 
     def state(self) -> dict:
         with self._lock:
@@ -147,7 +250,12 @@ class Store:
         with self._lock:
             return next((a for a in self.data["apps"] if a["id"] == app_id), None)
 
-    def update_app(self, app_id: str, patch: dict) -> dict | None:
+    def update_app(self, app_id: str, patch: dict, persist: bool = True) -> dict | None:
+        """Apply a patch. persist=False batches: the caller must flush().
+
+        Used by bulk passes like the icon backfill, which patched every app in
+        turn and rewrote the whole JSON file once per app.
+        """
         with self._lock:
             app = self.get_app(app_id)
             if not app:
@@ -157,7 +265,8 @@ class Store:
                         "track_exe", "order"):
                 if key in patch:
                     app[key] = patch[key]
-            self._persist()
+            if persist:
+                self._persist()
             return app
 
     def reorder_apps(self, ordered_ids: list[str]) -> None:
@@ -249,9 +358,9 @@ class Store:
                     self._persist()
             return self.data["settings"]
 
-    def flush(self) -> None:
+    def flush(self) -> bool:
         with self._lock:
-            self._persist()
+            return self._persist()
 
     def export_data(self, dest: str | Path) -> Path:
         dest = Path(dest)
@@ -266,9 +375,13 @@ class Store:
         return self.export_data(self.path.with_name(f"centurio-backup-{stamp}.json"))
 
     def import_data(self, src: str | Path, merge: bool = False) -> bool:
-        """Load a previously exported file. Currently dormant: no UI path calls
-        this, so incoming records are trusted as-is. Validate every record
-        against add_app's schema before wiring it back up to a button."""
+        """Load a previously exported file.
+
+        Records go through the same shape check as the ones read from disk, so
+        a malformed file can't blank the window. Still dormant — no UI path
+        calls this — and note that the check is structural: an imported record
+        names a launch target that nothing here has verified.
+        """
         try:
             with open(src, "r", encoding="utf-8") as fh:
                 incoming = json.load(fh)
@@ -276,13 +389,7 @@ class Store:
             return False
         if not isinstance(incoming, dict) or "apps" not in incoming:
             return False
-        clean = {
-            "version": incoming.get("version", 1),
-            "categories": incoming.get("categories") if isinstance(incoming.get("categories"), list)
-            else copy.deepcopy(DEFAULT_CATEGORIES),
-            "apps": incoming.get("apps") if isinstance(incoming.get("apps"), list) else [],
-            "settings": {**DEFAULT_SETTINGS, **(incoming.get("settings") or {})},
-        }
+        clean = self._sanitize(incoming)
         with self._lock:
             if merge:
                 have = {a["id"] for a in self.data["apps"] if a.get("id")}

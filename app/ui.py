@@ -25,10 +25,11 @@ class CenturioUI:
         self.view = ViewState(store)
         self._sel_id = None
         # store.state() deep-copies the whole library (apps + categories +
-        # settings); reading it once per refresh() and handing this cache to
-        # every tile beats re-copying it per tile, which used to happen on
-        # every keystroke in the search box. Kept current by refresh() itself,
-        # which every setting-changing code path already calls.
+        # settings). refresh() takes one snapshot and every helper below reads
+        # it for the duration of that pass — it used to be six copies per
+        # keystroke in the search box. The snapshot is dropped when the pass
+        # ends, so nothing outside a refresh can read stale data.
+        self._snapshot = None
         self._settings = self.store.state()["settings"]
 
         self.search_field = ft.TextField(
@@ -91,7 +92,7 @@ class CenturioUI:
         self.view.sidebar_open = value
 
     def state(self):
-        return self.store.state()
+        return self._snapshot if self._snapshot is not None else self.store.state()
 
     def categories(self):
         return sorted(self.state()["categories"], key=lambda c: c.get("order", 0))
@@ -100,6 +101,9 @@ class CenturioUI:
         return self.state()["apps"]
 
     def mount(self):
+        # A failed save no longer kills the click that caused it, so it has to
+        # be said out loud — otherwise the app looks like it saved fine.
+        self.store.on_error = self._on_store_error
         toolbar = self._build_toolbar()
         main = ft.Column(
             [toolbar, ft.Container(self.content_col, expand=True,
@@ -121,15 +125,19 @@ class CenturioUI:
             pass
 
     def refresh(self, content_only=False):
-        self._settings = self.store.state()["settings"]
-        if not content_only:
-            self.rail_container.content = self._build_rail()
-        show_sidebar = self.sidebar_open
-        self.sidebar_container.visible = show_sidebar
-        self.sidebar_container.content = self._build_sidebar() if show_sidebar else None
-        self.content_col.controls = self._build_content()
-        if not content_only:
-            self.status_container.content = self._build_statusbar()
+        self._snapshot = self.store.state()
+        self._settings = self._snapshot["settings"]
+        try:
+            if not content_only:
+                self.rail_container.content = self._build_rail()
+            show_sidebar = self.sidebar_open
+            self.sidebar_container.visible = show_sidebar
+            self.sidebar_container.content = self._build_sidebar() if show_sidebar else None
+            self.content_col.controls = self._build_content()
+            if not content_only:
+                self.status_container.content = self._build_statusbar()
+        finally:
+            self._snapshot = None
         self.page.update()
 
     def _icon(self, name, size=16, color=C.MUTED):
@@ -475,13 +483,18 @@ class CenturioUI:
         )
 
     def _build_content(self):
-        self._sel_id = self._selected_id()
         apps = self.apps()
         if not apps:
+            self._sel_id = None
             return [self._empty("Библиотека пуста",
                                 "Добавьте первое приложение — выберите его файл, и Centurio "
                                 "закрепит его для быстрого запуска.", "Добавить приложение",
                                 self._open_app_dialog)]
+
+        # build_sections() filters and sorts the whole library, so it runs once
+        # per pass and the keyboard selection reads the same result.
+        sections = self._sections()
+        self._sel_id = self._selected_id(sections)
 
         controls = []
         is_all = self.filter == "all" and not self.query.strip()
@@ -492,7 +505,6 @@ class CenturioUI:
             if quick:
                 controls += self._quick_row(quick, quick_accels(apps))
 
-        sections = self._sections()
         if not sections or all(not s["apps"] for s in sections):
             controls.append(self._empty("Ничего не найдено",
                                         "Попробуйте изменить запрос." if self.query
@@ -831,11 +843,11 @@ class CenturioUI:
                     self._toast("Не удалось пересканировать", error=True)
         threading.Thread(target=work, daemon=True).start()
 
-    def _flat_apps(self):
-        return queries.flatten_sections(self._sections())
+    def _flat_apps(self, sections=None):
+        return queries.flatten_sections(self._sections() if sections is None else sections)
 
-    def _selected_id(self):
-        flat = self._flat_apps()
+    def _selected_id(self, sections=None):
+        flat = self._flat_apps(sections)
         if 0 <= self.selected < len(flat):
             return flat[self.selected]["id"]
         return None
@@ -894,6 +906,12 @@ class CenturioUI:
         if cb:
             cb(key, value)
         self.refresh()
+
+    def _on_store_error(self, message):
+        try:
+            self._toast(f"Не удалось сохранить данные: {message}", error=True)
+        except Exception:
+            pass
 
     def _toast(self, msg, error=False):
         icon = ft.Icons.ERROR_OUTLINE if error else ft.Icons.CHECK_CIRCLE_OUTLINE
