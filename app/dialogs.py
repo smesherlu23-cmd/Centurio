@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import shlex
+import threading
+from collections import Counter
 
 import flet as ft
 
@@ -130,6 +132,26 @@ def _remove(app_ui, app_id):
     app_ui._toast("Удалено")
 
 
+def _refresh_icons_async(app_ui):
+    """Re-resolve whatever icons are now missing, off the UI thread.
+
+    Extracting an icon shells out to PowerShell, so doing it inside save()
+    would freeze the dialog for as long as that takes. refresh=False keeps it
+    to the gaps — the entry whose path just changed, or the one just added.
+    """
+    from pathlib import Path
+
+    def work():
+        from . import discovery, log
+        try:
+            cache = str(Path(app_ui.store.path).parent / "icons")
+            if discovery.backfill_icons(app_ui.store, cache):
+                app_ui._on_library_changed()
+        except Exception:
+            log.exception("re-resolving icons after an edit failed")
+    threading.Thread(target=work, daemon=True).start()
+
+
 def _toggle_quick(app_ui, app_id):
     a = app_ui.store.get_app(app_id)
     if a:
@@ -145,7 +167,6 @@ def open_app_dialog(app_ui, existing=None):
 
 
 def open_add_picker(app_ui):
-    import threading
     from pathlib import Path
 
     from .discovery import discover_apps, extract_icon
@@ -250,14 +271,18 @@ def open_add_picker(app_ui):
         render()
     search.on_change = on_query
 
-    def load():
-        found = discover_apps(icon_cache)
+    def apply_found(found):
         ui_state["apps"] = found
         status.value = (f"Найдено приложений: {len(found)}" if found
                         else "Ничего не нашлось автоматически — используйте «Указать файл вручную».")
         if status.page:
             status.update()
         render()
+
+    def load():
+        found = discover_apps(icon_cache)
+        app_ui._remember_discovery(found)
+        apply_found(found)
 
     def on_pick(e):
         if not e.files:
@@ -318,8 +343,15 @@ def open_add_picker(app_ui):
                          add_btn])],
         shape=ft.RoundedRectangleBorder(radius=16))
     page.open(dialog)
-    render()
-    threading.Thread(target=load, daemon=True).start()
+    # A rescan already walked the Start Menu, the registry and every Steam
+    # library a moment ago and told the user how many new programs it saw.
+    # Scanning again just to show them would repeat all of that work.
+    cached = app_ui.cached_discovery()
+    if cached is not None:
+        apply_found(cached)
+    else:
+        render()
+        threading.Thread(target=load, daemon=True).start()
 
 
 def _open_detail_dialog(app_ui, existing):
@@ -477,14 +509,26 @@ def _open_detail_dialog(app_ui, existing):
             app_ui._toast("Выберите файл приложения", error=True)
             return
         if is_edit:
-            store.update_app(existing["id"], {k: draft.get(k) for k in
-                             ("name", "path", "args", "working_dir", "run_as_admin", "sub",
-                              "category_id", "hue", "favorite", "quick", "hotkey", "track_exe")})
+            patch = {k: draft.get(k) for k in
+                     ("name", "path", "args", "working_dir", "run_as_admin", "sub",
+                      "category_id", "hue", "favorite", "quick", "hotkey", "track_exe")}
+            # The icon belongs to the old executable. Clearing it here — and
+            # letting the backfill below re-resolve it — is what keeps a
+            # retargeted entry from wearing the previous program's icon until
+            # the next full rescan.
+            repoint = (draft.get("path") or "").strip() != (existing.get("path") or "").strip()
+            if repoint:
+                patch["icon"] = None
+                patch["poster"] = None
+            store.update_app(existing["id"], patch)
         else:
+            repoint = False
             store.add_app(draft)
         page.close(dialog)
         app_ui._on_library_changed()
         app_ui._toast("Сохранено" if is_edit else "Приложение добавлено")
+        if repoint or not is_edit:
+            _refresh_icons_async(app_ui)
 
     def remove():
         def do():
@@ -553,8 +597,12 @@ def open_categories_dialog(app_ui, focus_id=None):
     def rebuild():
         list_col.controls = []
         cats = app_ui.categories()
+        # One store read for the whole list. store.state() deep-copies the
+        # entire library, and this used to run once per category on every
+        # rename, reorder and delete.
+        counts = Counter(a.get("category_id") for a in store.state()["apps"])
         for idx, c in enumerate(cats):
-            count = sum(1 for a in store.state()["apps"] if a.get("category_id") == c["id"])
+            count = counts.get(c["id"], 0)
             glyph = ft.Container(app_ui._cat_glyph(c, size=16), width=26, height=26,
                                  border_radius=8, alignment=ft.alignment.center,
                                  on_click=lambda e, cc=c: _open_category_editor(app_ui, cc, rebuild),

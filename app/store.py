@@ -373,7 +373,9 @@ class Store:
                 self.data["settings"][key] = value
                 if persist:
                     self._persist()
-            return self.data["settings"]
+            # A copy, like state(): handing out the live dict let a caller
+            # mutate the settings behind the lock and without a write.
+            return dict(self.data["settings"])
 
     def flush(self) -> bool:
         with self._lock:

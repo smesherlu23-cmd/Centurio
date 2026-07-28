@@ -8,9 +8,11 @@ MODE_KEYS = ("grid", "list")
 class ViewState:
     def __init__(self, store):
         self.store = store
-        s = store.state()["settings"]
+        # One snapshot, not two: store.state() deep-copies the whole library.
+        state = store.state()
+        s = state["settings"]
         self.filter = queries.valid_filter(s.get("view_filter") or "all",
-                                           store.state()["categories"])
+                                           state["categories"])
         self.query = ""
         self.sort = s.get("view_sort") if s.get("view_sort") in queries.SORT_KEYS else "alpha"
         self.mode = s.get("view_mode") if s.get("view_mode") in MODE_KEYS else "grid"

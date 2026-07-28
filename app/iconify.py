@@ -33,31 +33,45 @@ def _draw(size: int) -> bytearray:
     gap_half = math.radians(38)
     aa = 2
 
+    # This is a pure-Python per-subsample loop that runs on the first launch,
+    # before the window is built, so the inner body is kept cheap: the ring
+    # test compares squared distances, atan2 is only paid for inside the ring,
+    # and the loop-invariant gradient deltas and math lookups are hoisted.
+    dark_r, dark_g, dark_b = dark
+    dr, dg, db = g1[0] - g0[0], g1[1] - g0[1], g1[2] - g0[2]
+    g0r, g0g, g0b = g0
+    ring_outer2 = ring_outer * ring_outer
+    ring_inner2 = ring_inner * ring_inner
+    atan2 = math.atan2
+    inside = _inside_rounded_rect
+    n = aa * aa
+    span = 2 * size
+
     for y in range(size):
         for x in range(size):
             rr = gg = bb = aa_acc = 0.0
             for sy in range(aa):
+                py = y + (sy + 0.5) / aa
+                ddy = py - cy
                 for sx in range(aa):
                     px = x + (sx + 0.5) / aa
-                    py = y + (sy + 0.5) / aa
-                    if not _inside_rounded_rect(px, py, size, radius):
+                    if not inside(px, py, size, radius):
                         continue
-                    t = (px + (size - py)) / (2 * size)
+                    t = (px + (size - py)) / span
                     t = 0.0 if t < 0 else 1.0 if t > 1 else t
-                    cr = g0[0] + (g1[0] - g0[0]) * t
-                    cgc = g0[1] + (g1[1] - g0[1]) * t
-                    cb = g0[2] + (g1[2] - g0[2]) * t
                     ddx = px - cx
-                    ddy = py - cy
-                    dist = math.hypot(ddx, ddy)
-                    ang = math.atan2(ddy, ddx)
-                    if ring_inner <= dist <= ring_outer and abs(ang) >= gap_half:
-                        cr, cgc, cb = dark
+                    d2 = ddx * ddx + ddy * ddy
+                    if (ring_inner2 <= d2 <= ring_outer2
+                            and abs(atan2(ddy, ddx)) >= gap_half):
+                        cr, cgc, cb = dark_r, dark_g, dark_b
+                    else:
+                        cr = g0r + dr * t
+                        cgc = g0g + dg * t
+                        cb = g0b + db * t
                     rr += cr
                     gg += cgc
                     bb += cb
                     aa_acc += 255
-            n = aa * aa
             idx = (y * size + x) * 4
             buf[idx] = round(rr / n)
             buf[idx + 1] = round(gg / n)
@@ -90,13 +104,17 @@ def generate_icon(path: Path | str, size: int = 256) -> Path:
 
 
 def ensure_icons(assets_dir: Path | str) -> Path:
+    """Make sure the window/tray icon exists, and return it.
+
+    Runs on the startup path, so it draws only what the running app actually
+    reads. tray.png is a build-time asset — nothing loads it at runtime, the
+    tray is handed this same icon.png — so it is left to __main__ below and to
+    the `python -m app.iconify` step in the build recipe.
+    """
     assets = Path(assets_dir)
     icon = assets / "icon.png"
-    tray = assets / "tray.png"
     if not icon.exists():
         generate_icon(icon, 256)
-    if not tray.exists():
-        generate_icon(tray, 32)
     return icon
 
 

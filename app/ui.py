@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
+from pathlib import Path
 
 import flet as ft
 
 from . import __version__
 from . import colors as C
+from . import log
 from . import queries
 from .format import (
     CATEGORY_ICON_CHOICES, T, cat_icon, initials, plu_apps, plu_cats, time_ago)
@@ -25,13 +29,25 @@ class CenturioUI:
         self.running: set[str] = set()
         self.view = ViewState(store)
         self._sel_id = None
+        # refresh() runs from five places — the UI thread, the process
+        # monitor, the rescan worker, the icon backfill and the pynput
+        # listener — and they all rebuild the same control tree. The lock
+        # serialises a whole pass (snapshot, build, page.update) so two
+        # threads can't interleave halves of two different libraries.
+        self._refresh_lock = threading.RLock()
         # store.state() deep-copies the whole library (apps + categories +
         # settings). refresh() takes one snapshot and every helper below reads
         # it for the duration of that pass — it used to be six copies per
         # keystroke in the search box. The snapshot is dropped when the pass
-        # ends, so nothing outside a refresh can read stale data.
-        self._snapshot = None
+        # ends, so nothing outside a refresh can read stale data. It lives in
+        # thread-local storage: a background refresh must never hand its
+        # snapshot to a reader on another thread.
+        self._local = threading.local()
         self._settings = self.store.state()["settings"]
+        # Result of the last discover_apps() run, so an explicit rescan
+        # followed by "Добавить приложение" doesn't scan the machine twice.
+        self._discovered = None
+        self._discovered_at = 0.0
 
         self.search_field = ft.TextField(
             value="", hint_text="Поиск приложений…", border=ft.InputBorder.NONE,
@@ -92,6 +108,14 @@ class CenturioUI:
     def sidebar_open(self, value):
         self.view.sidebar_open = value
 
+    @property
+    def _snapshot(self):
+        return getattr(self._local, "snapshot", None)
+
+    @_snapshot.setter
+    def _snapshot(self, value):
+        self._local.snapshot = value
+
     def state(self):
         return self._snapshot if self._snapshot is not None else self.store.state()
 
@@ -123,23 +147,24 @@ class CenturioUI:
         try:
             self.refresh()
         except Exception:
-            pass
+            log.exception("refreshing after a running-state change failed")
 
     def refresh(self, content_only=False):
-        self._snapshot = self.store.state()
-        self._settings = self._snapshot["settings"]
-        try:
-            if not content_only:
-                self.rail_container.content = self._build_rail()
-            show_sidebar = self.sidebar_open
-            self.sidebar_container.visible = show_sidebar
-            self.sidebar_container.content = self._build_sidebar() if show_sidebar else None
-            self.content_col.controls = self._build_content()
-            if not content_only:
-                self.status_container.content = self._build_statusbar()
-        finally:
-            self._snapshot = None
-        self.page.update()
+        with self._refresh_lock:
+            self._snapshot = self.store.state()
+            self._settings = self._snapshot["settings"]
+            try:
+                if not content_only:
+                    self.rail_container.content = self._build_rail()
+                show_sidebar = self.sidebar_open
+                self.sidebar_container.visible = show_sidebar
+                self.sidebar_container.content = self._build_sidebar() if show_sidebar else None
+                self.content_col.controls = self._build_content()
+                if not content_only:
+                    self.status_container.content = self._build_statusbar()
+            finally:
+                self._snapshot = None
+            self.page.update()
 
     def _icon(self, name, size=16, color=C.MUTED):
         return ft.Icon(name, size=size, color=color)
@@ -811,17 +836,31 @@ class CenturioUI:
         self.refresh(content_only=True)
 
     def _icon_cache_dir(self):
-        from pathlib import Path
         return str(Path(self.store.path).parent / "icons")
 
-    def _rescan(self, silent=False):
-        import threading
+    # How long a discover_apps() result stays good enough to reuse. Long
+    # enough to cover "rescan, then open Добавить приложение", short enough
+    # that a program installed meanwhile still shows up.
+    DISCOVERY_TTL = 120.0
 
+    def cached_discovery(self):
+        """The last scan result, or None once it is too old to trust."""
+        if self._discovered is None:
+            return None
+        if time.monotonic() - self._discovered_at > self.DISCOVERY_TTL:
+            return None
+        return self._discovered
+
+    def _remember_discovery(self, found):
+        self._discovered = found
+        self._discovered_at = time.monotonic()
+
+    def _rescan(self, silent=False):
         if not silent:
             self._toast("Пересканирование…")
 
         def work():
-            from . import discovery, log
+            from . import discovery
             try:
                 cache = self._icon_cache_dir()
                 if not silent:
@@ -829,8 +868,13 @@ class CenturioUI:
                     # give artwork downloads another chance in case they were
                     # switched off while the machine was offline.
                     discovery.reset_cdn_state()
-                changed = discovery.backfill_icons(self.store, cache, refresh=True)
+                # refresh=True re-resolves every icon, and on Windows that is
+                # one PowerShell process per .exe. Worth it when the user asked
+                # for it; not something the 15-minute background tick should do
+                # to a hundred-app library, so a silent pass only fills gaps.
+                changed = discovery.backfill_icons(self.store, cache, refresh=not silent)
                 found = discovery.discover_apps(cache)
+                self._remember_discovery(found)
                 existing = {(a.get("path") or "").lower() for a in self.store.state()["apps"]}
                 new = [a for a in found if (a.get("path") or "").lower() not in existing]
                 self._on_library_changed()
@@ -854,25 +898,36 @@ class CenturioUI:
         return None
 
     def move_selection(self, delta):
-        flat = self._flat_apps()
-        if not flat:
-            self.selected = -1
-            return
-        self.view.move_selection(delta, len(flat))
-        self.refresh()
+        # Same lock as refresh(): the list the selection indexes into and the
+        # redraw that renders it must see one library, not two.
+        with self._refresh_lock:
+            flat = self._flat_apps()
+            if not flat:
+                self.selected = -1
+                return
+            self.view.move_selection(delta, len(flat))
+            self.refresh()
 
     def activate_selected(self):
-        flat = self._flat_apps()
-        if not flat:
-            return
-        idx = self.selected if 0 <= self.selected < len(flat) else 0
+        with self._refresh_lock:
+            flat = self._flat_apps()
+            if not flat:
+                return
+            idx = self.selected if 0 <= self.selected < len(flat) else 0
         self._launch(flat[idx]["id"])
 
     def _launch(self, app_id):
         app = self.store.get_app(app_id)
         if not app:
             return
-        res = self.launcher.launch(app)
+        try:
+            res = self.launcher.launch(app)
+        except Exception as exc:
+            # launch() is expected to report failure in its return value, but
+            # it shells out to the OS — an unforeseen error must still become a
+            # toast rather than a traceback inside a Flet event handler.
+            log.exception("launching %s failed", app.get("path"))
+            res = {"ok": False, "error": str(exc)}
         if res.get("ok"):
             self.store.mark_launched(app_id)
             self.running = set(self.launcher.running_ids())
@@ -912,7 +967,7 @@ class CenturioUI:
         try:
             self._toast(f"Не удалось сохранить данные: {message}", error=True)
         except Exception:
-            pass
+            log.exception("reporting a store write failure to the user failed")
 
     def _toast(self, msg, error=False):
         icon = ft.Icons.ERROR_OUTLINE if error else ft.Icons.CHECK_CIRCLE_OUTLINE

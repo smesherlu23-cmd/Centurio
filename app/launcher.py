@@ -112,7 +112,16 @@ class Launcher:
         return Path(path).suffix.lower() in _EXE_EXTS
 
     def _open_with_os(self, path: str):
-        os.startfile(path) 
+        # os.startfile only exists on Windows, which is the only platform
+        # Centurio targets — but the README's web mode runs the same code on
+        # other machines for debugging, and there the missing attribute raised
+        # an AttributeError that sailed straight past every `except OSError`
+        # below and into the Flet event handler behind the click. Raising an
+        # OSError keeps the failure on the path callers already handle.
+        opener = getattr(os, "startfile", None)
+        if opener is None:
+            raise OSError("Запуск через оболочку доступен только в Windows")
+        opener(path)
 
     def _work_dir(self, app: dict, path: str) -> str:
         wd = (app.get("working_dir") or "").strip()

@@ -47,14 +47,17 @@ def _summarize(passed: int, failed: int, skipped: list[str], is_ci: bool) -> tup
 
     Pulled out of the __main__ block so the CI-escalation rule — any skip
     under CI is a failure — is itself testable, not just exercised by the
-    one real run of this file.
+    one real run of this file. Reports by returning, never by printing: the
+    escalation branch used to print "FAIL: ..." as a side effect, so the test
+    that exercises it stamped a fake failure into the log of a green run.
     """
+    note = ""
     if skipped and is_ci:
         failed += 1
-        print(f"FAIL: {len(skipped)} test(s) skipped under CI (Flet should be installed here): "
-              f"{', '.join(skipped)}")
+        note = (f"\nFAIL: {len(skipped)} test(s) skipped under CI (Flet should be installed "
+                f"here): {', '.join(skipped)}")
     line = f"{passed} passed, {failed} failed" + (f", {len(skipped)} skipped" if skipped else "")
-    return (1 if failed else 0), line
+    return (1 if failed else 0), line + note
 
 
 def test_store():
@@ -122,6 +125,13 @@ def test_store():
         s.set_setting("bogus", 1)
         ok("bogus" not in s.state()["settings"], "unknown setting rejected")
         s.set_setting("accent", "#4f7dff")
+
+        # set_setting used to hand back the live settings dict, so a caller
+        # could edit the store's state behind the lock and without a write.
+        returned = s.set_setting("tile_size", "compact")
+        returned["tile_size"] = "mutated-from-outside"
+        ok(s.state()["settings"]["tile_size"] == "compact",
+           "mutating set_setting's return value doesn't reach the store")
 
         s2 = Store(path)
         ok(s2.state()["settings"]["accent"] == "#4f7dff", "reload keeps setting")
@@ -487,6 +497,10 @@ def test_ci_skip_escalation():
     ok(code == 1, "any skip under CI fails the run")
     ok("1 failed" in line and "2 skipped" in line,
        "escalation adds one failure and the report still names the skip count")
+    ok("UI tests" in line, "the escalation names the skipped tests in the returned report")
+
+    code, line = _summarize(10, 0, [], is_ci=True)
+    ok("FAIL" not in line, "a clean run's report carries no failure text")
 
     code, line = _summarize(10, 2, [], is_ci=True)
     ok(code == 1 and "2 failed" in line, "a genuine failure with no skips isn't inflated by escalation")
@@ -526,6 +540,23 @@ def _completes(fn, seconds=2.0) -> bool:
     done = threading.Event()
     threading.Thread(target=lambda: (fn(), done.set()), daemon=True).start()
     return done.wait(seconds)
+
+
+def _settle_threads(before, timeout=3.0) -> bool:
+    """Wait until the worker threads a test started have finished.
+
+    Deleting a temp dir while a background scan is still writing into it used
+    to be papered over with a fixed sleep; this waits for the actual condition
+    instead, so the test is neither slow nor racy.
+    """
+    import threading
+    import time
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not [t for t in threading.enumerate() if t not in before and t.is_alive()]:
+            return True
+        time.sleep(0.01)
+    return False
 
 
 def test_geometry_debounce():
@@ -597,6 +628,21 @@ def test_autostart():
         ok(autostart.is_enabled() is False, "autostart reports off outside Windows")
         ok(autostart.sync(True) is True, "sync keeps the stored preference outside Windows")
         ok(autostart.sync(False) is False, "sync keeps 'off' outside Windows")
+
+
+def _find_control(node, pred, _depth=0):
+    """Depth-first search of a built Flet tree, so dialog tests don't index
+    into `content.controls[2].controls[0]` and break on every re-layout."""
+    if _depth > 40 or node is None or isinstance(node, str):
+        return None
+    if pred(node):
+        return node
+    for attr in ("controls", "actions"):
+        for child in getattr(node, attr, None) or []:
+            found = _find_control(child, pred, _depth + 1)
+            if found is not None:
+                return found
+    return _find_control(getattr(node, "content", None), pred, _depth + 1)
 
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -702,16 +748,23 @@ def test_discovery():
     ok(ic is None and fit == "contain", "resolve_icon_for: missing steam art -> None/contain")
     ok(discovery.resolve_icon_for("")[0] is None, "resolve_icon_for: empty path -> None")
 
-    with tempfile.TemporaryDirectory() as d:
-        lib = os.path.join(d, "steamapps")
-        os.makedirs(lib)
-        with open(os.path.join(lib, "appmanifest_730.acf"), "w") as fh:
-            fh.write('"AppState"{ "appid" "730" "name" "Counter-Strike 2" }')
-        discovery._steam_roots = lambda: [d]
-        games = discovery._steam_games(None)
-        ok(games and games[0]["sub"] == "Steam", "steam games carry sub='Steam'")
-        ok(games and "track_exe" in games[0], "steam games carry a track_exe field")
-        ok(games and "poster" in games[0], "steam games carry a poster field")
+    # _steam_roots is module-level state. Every stub below is restored: these
+    # tests share one process with everything after them in __main__, and an
+    # unrestored patch quietly makes the order of the test list significant.
+    real_steam_roots = discovery._steam_roots
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            lib = os.path.join(d, "steamapps")
+            os.makedirs(lib)
+            with open(os.path.join(lib, "appmanifest_730.acf"), "w") as fh:
+                fh.write('"AppState"{ "appid" "730" "name" "Counter-Strike 2" }')
+            discovery._steam_roots = lambda: [d]
+            games = discovery._steam_games(None)
+            ok(games and games[0]["sub"] == "Steam", "steam games carry sub='Steam'")
+            ok(games and "track_exe" in games[0], "steam games carry a track_exe field")
+            ok(games and "poster" in games[0], "steam games carry a poster field")
+    finally:
+        discovery._steam_roots = real_steam_roots
 
 
     with tempfile.TemporaryDirectory() as d:
@@ -766,10 +819,15 @@ def test_discovery():
     store2 = Store(os.path.join(tempfile.mkdtemp(), "d.json"))
     a = store2.add_app({"name": "CS2", "path": "steam://rungameid/730", "icon": "/fake/cover.jpg"})
     ok(not a.get("sub"), "precondition: no sub yet")
-    discovery._steam_roots = lambda: [] 
-    changed = discovery.backfill_icons(store2, None)
-    ok(changed and store2.get_app(a["id"])["sub"] == "Steam",
-       "backfill_icons fixes sub even when icon already present")
+    try:
+        discovery._steam_roots = lambda: []
+        changed = discovery.backfill_icons(store2, None)
+        ok(changed and store2.get_app(a["id"])["sub"] == "Steam",
+           "backfill_icons fixes sub even when icon already present")
+    finally:
+        discovery._steam_roots = real_steam_roots
+    ok(discovery._steam_roots is real_steam_roots,
+       "the module-level Steam-root lookup is left as this test found it")
 
 
 def test_hotkeys():
@@ -923,6 +981,25 @@ def test_launch_options():
     finally:
         os.unlink(exe)
 
+    # os.startfile is Windows-only. The AttributeError it raised elsewhere
+    # sailed past launch()'s `except OSError` and into the Flet event handler
+    # behind the click; it has to come back as a reported failure instead.
+    real_startfile = getattr(os, "startfile", None)
+    if real_startfile is not None:
+        del os.startfile
+    try:
+        raised = None
+        try:
+            res = lch.launch({"id": "u", "path": "steam://rungameid/730"})
+        except Exception as exc:
+            res, raised = None, exc
+        ok(raised is None, "a URL launch without os.startfile doesn't raise")
+        ok(res and res.get("ok") is False and res.get("error"),
+           "it reports the failure instead, with a message for the toast")
+    finally:
+        if real_startfile is not None:
+            os.startfile = real_startfile
+
 
 def test_data_ops():
     with tempfile.TemporaryDirectory() as d:
@@ -1068,8 +1145,22 @@ def test_ui_build():
             pass
 
     import shutil
-    import time as _time
+    import threading as _threading
 
+    from app import discovery as _discovery
+
+    # open_add_picker scans the machine on a worker thread, writing icons into
+    # the temp dir this test deletes on its way out. Stubbing the scan keeps
+    # the dialog test about the dialog, and keeps rmtree off a live scan.
+    scans = {"n": 0}
+    real_discover = _discovery.discover_apps
+
+    def fake_discover(icon_cache=None):
+        scans["n"] += 1
+        return []
+
+    _discovery.discover_apps = fake_discover
+    before_threads = set(_threading.enumerate())
     d = tempfile.mkdtemp()
     try:
         store = Store(os.path.join(d, "data.json"))
@@ -1104,8 +1195,52 @@ def test_ui_build():
 
         dialogs.open_app_dialog(ui, None)
         ok(len(page.opened) >= 1, "add-app dialog opens")
-        dialogs.open_app_dialog(ui, store.state()["apps"][0])
-        ok(True, "edit-app dialog opens")
+        ok(_settle_threads(before_threads), "the add dialog's scan thread finishes")
+        ok(scans["n"] == 1, "opening the add dialog with nothing cached scans once")
+        # A rescan already paid for a scan; reopening the picker inside the TTL
+        # must reuse it instead of walking the registry and Steam again.
+        dialogs.open_app_dialog(ui, None)
+        ok(_settle_threads(before_threads), "the second open settles")
+        ok(scans["n"] == 1, "a cached scan result is reused instead of rescanning")
+        ok(ui.cached_discovery() is not None, "the scan result is cached on the UI")
+        ui._discovered_at -= ui.DISCOVERY_TTL + 1
+        ok(ui.cached_discovery() is None, "a stale scan result is not reused")
+        # Editing an entry to point at a different program used to keep the old
+        # program's icon until the next full rescan, because save()'s patch
+        # listed every field except icon/poster.
+        edit_id = store.state()["apps"][0]["id"]
+        store.update_app(edit_id, {"icon": "/old/previous-program.png"})
+        page.opened.clear()
+        dialogs.open_app_dialog(ui, store.get_app(edit_id))
+        ok(len(page.opened) >= 1, "edit-app dialog opens")
+        edit_dlg = page.opened[-1]
+        path_field = _find_control(
+            edit_dlg, lambda c: getattr(c, "hint_text", None) == "Путь к файлу приложения")
+        ok(path_field is not None, "the edit dialog exposes its path field")
+        path_field.value = "/x/newtarget.exe"
+        evt = MagicMock()
+        evt.control = path_field
+        path_field.on_change(evt)
+        edit_dlg.actions[0].controls[-1].on_click(None)
+        ok(_settle_threads(before_threads), "the post-save icon refresh finishes")
+        saved = store.get_app(edit_id)
+        ok(saved["path"] == "/x/newtarget.exe", "the retargeted path is saved")
+        ok(not saved.get("icon"),
+           "repointing an entry drops the previous program's icon")
+
+        page.opened.clear()
+        dialogs.open_app_dialog(ui, store.get_app(edit_id))
+        edit_dlg = page.opened[-1]
+        edit_dlg.actions[0].controls[-1].on_click(None)
+        ok(_settle_threads(before_threads), "saving an unchanged entry settles")
+        store.update_app(edit_id, {"icon": "/kept/icon.png"})
+        page.opened.clear()
+        dialogs.open_app_dialog(ui, store.get_app(edit_id))
+        edit_dlg = page.opened[-1]
+        edit_dlg.actions[0].controls[-1].on_click(None)
+        ok(_settle_threads(before_threads), "the unchanged save settles")
+        ok(store.get_app(edit_id).get("icon") == "/kept/icon.png",
+           "saving without touching the path keeps the icon")
         dialogs.open_categories_dialog(ui)
         ok(True, "categories dialog opens")
         target_cat_id = store.state()["categories"][0]["id"]
@@ -1126,8 +1261,16 @@ def test_ui_build():
         ok(True, "move-to-category runs")
         dialogs.open_context_menu(ui, store.state()["apps"][0])
         ok(True, "context menu opens")
-        dialogs.confirm(ui, "T", "M", "OK", lambda: None)
-        ok(True, "confirm dialog opens")
+
+        # Called with one argument too many, this used to bind the callback to
+        # `danger` and the label to `on_confirm` — and still "pass", because
+        # nothing ever pressed the button.
+        fired = []
+        dialogs.confirm(ui, "Удалить «X»?", "Удалить", lambda: fired.append(1))
+        confirm_dlg = page.opened[-1]
+        ok(not fired, "confirm doesn't run its callback just for opening")
+        confirm_dlg.actions[0].controls[-1].on_click(None)
+        ok(fired == [1], "the confirm button runs the callback it was given")
 
         store.data["apps"] = []
         ui.filter = "all"
@@ -1150,7 +1293,8 @@ def test_ui_build():
         ok(err_icon.color == _C.DANGER, "an error toast uses the red icon, not the same look as success")
         ok(ok_icon.name != err_icon.name, "success and error toasts use different icons")
     finally:
-        _time.sleep(0.4) 
+        _discovery.discover_apps = real_discover
+        _settle_threads(before_threads)
         shutil.rmtree(d, ignore_errors=True)
 
 
@@ -1227,6 +1371,188 @@ def test_ui_settings_cache():
         ok(calls["n"] >= 2, "those reads aren't served from a stale snapshot")
 
 
+class _FakePage:
+    def __init__(self):
+        self.overlay = []
+        self.opened = []
+        self.controls = []
+
+    def open(self, d):
+        self.opened.append(d)
+
+    def close(self, d):
+        pass
+
+    def update(self):
+        pass
+
+
+def test_ui_refresh_thread_safety():
+    """refresh() runs from five threads and rebuilds one shared control tree.
+
+    Two things have to hold: a pass must not publish its snapshot to other
+    threads (they would read a half-built library), and concurrent passes must
+    not interleave.
+    """
+    try:
+        import threading
+        from unittest.mock import MagicMock
+
+        from app.ui import CenturioUI
+    except Exception as exc:
+        skip("UI refresh thread-safety test", exc)
+        return
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        for i in range(8):
+            store.add_app({"name": f"App{i}", "path": f"/x/{i}", "category_id": "work"})
+        ui = CenturioUI(_FakePage(), store, MagicMock())
+
+        seen_elsewhere = []
+        real_build = ui._build_content
+
+        def probing_build():
+            box = []
+            t = threading.Thread(target=lambda: box.append(ui._snapshot))
+            t.start()
+            t.join()
+            seen_elsewhere.append(box[0])
+            return real_build()
+
+        ui._build_content = probing_build
+        try:
+            ui.refresh()
+        finally:
+            ui._build_content = real_build
+        ok(seen_elsewhere == [None],
+           "a refresh's snapshot is invisible to every other thread")
+        ok(ui._snapshot is None, "the snapshot is dropped when the pass ends")
+
+        overlaps = []
+        depth = {"n": 0}
+        real_build2 = ui._build_content
+
+        def counting_build():
+            depth["n"] += 1
+            if depth["n"] > 1:
+                overlaps.append(depth["n"])
+            try:
+                return real_build2()
+            finally:
+                depth["n"] -= 1
+
+        ui._build_content = counting_build
+        errors = []
+
+        def hammer():
+            try:
+                for _ in range(25):
+                    ui.refresh()
+                    ui.set_running(["nope"])
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=hammer) for _ in range(4)]
+        try:
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        finally:
+            ui._build_content = real_build2
+        ok(not errors, f"concurrent refreshes raise nothing ({errors[:1]})")
+        ok(not overlaps, "two refresh passes never build the control tree at once")
+        ok(ui._snapshot is None, "no snapshot is left behind after the storm")
+
+
+def test_ui_categories_dialog_reads():
+    """Rebuilding the category list used to deep-copy the library per row."""
+    try:
+        from unittest.mock import MagicMock
+
+        from app import dialogs
+        from app.ui import CenturioUI
+    except Exception as exc:
+        skip("UI categories-dialog test", exc)
+        return
+
+    def reads_with(n_categories):
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(os.path.join(d, "data.json"))
+            for i in range(n_categories):
+                store.add_category(f"Cat{i}")
+            for i in range(10):
+                store.add_app({"name": f"App{i}", "path": f"/x/{i}", "category_id": "work"})
+            ui = CenturioUI(_FakePage(), store, MagicMock())
+            calls = {"n": 0}
+            real_state = store.state
+
+            def counting_state():
+                calls["n"] += 1
+                return real_state()
+
+            store.state = counting_state
+            try:
+                dialogs.open_categories_dialog(ui)
+            finally:
+                store.state = real_state
+            return calls["n"]
+
+    few, many = reads_with(1), reads_with(20)
+    ok(few > 0, "opening the categories dialog reads the store")
+    ok(few == many,
+       f"the read count doesn't grow with the category count ({few} vs {many})")
+
+
+def test_ui_background_rescan():
+    """The silent 15-minute tick must not do the expensive icon pass.
+
+    refresh=True re-resolves every icon, which on Windows is one PowerShell
+    process per .exe — fine for an explicit "Пересканировать", not for a
+    background timer.
+    """
+    try:
+        from unittest.mock import MagicMock
+
+        from app import discovery
+        from app.ui import CenturioUI
+    except Exception as exc:
+        skip("UI background-rescan test", exc)
+        return
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        store.add_app({"name": "App", "path": "/x/app.exe", "category_id": "work"})
+        ui = CenturioUI(_FakePage(), store, MagicMock())
+
+        refreshes = []
+        real_backfill = discovery.backfill_icons
+        real_discover = discovery.discover_apps
+        before = set(__import__("threading").enumerate())
+
+        def fake_backfill(store_, icon_cache=None, refresh=False):
+            refreshes.append(refresh)
+            return False
+
+        discovery.backfill_icons = fake_backfill
+        discovery.discover_apps = lambda icon_cache=None: []
+        try:
+            ui._rescan(silent=True)
+            ok(_settle_threads(before), "the silent rescan finishes")
+            ok(refreshes == [False],
+               "a silent rescan only fills gaps, it doesn't re-resolve every icon")
+
+            ui._rescan()
+            ok(_settle_threads(before), "the explicit rescan finishes")
+            ok(refreshes == [False, True],
+               "an explicit rescan still forces the full icon refresh")
+        finally:
+            discovery.backfill_icons = real_backfill
+            discovery.discover_apps = real_discover
+            _settle_threads(before)
+
+
 if __name__ == "__main__":
     test_store()
     test_store_concurrency()
@@ -1257,6 +1583,9 @@ if __name__ == "__main__":
     test_queries()
     test_ui_build()
     test_ui_settings_cache()
+    test_ui_refresh_thread_safety()
+    test_ui_categories_dialog_reads()
+    test_ui_background_rescan()
     code, line = _summarize(_passed, _failed, _skipped, bool(os.environ.get("CI")))
     print(f"\n{line}")
     sys.exit(code)
