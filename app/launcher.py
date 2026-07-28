@@ -141,7 +141,11 @@ class Launcher:
     def _run_as_admin(self, path: str, args: list[str], cwd: str) -> dict:
         try:
             import ctypes
-            params = " ".join(f'"{a}"' if " " in a else a for a in args)
+            # list2cmdline is the quoting subprocess itself uses for Windows.
+            # Wrapping only args that contain a space produced a broken command
+            # line for anything carrying a quote or a trailing backslash — and
+            # this one is handed to ShellExecuteW with an elevation prompt.
+            params = subprocess.list2cmdline(args)
             rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", path, params or None, cwd, 1)
             if int(rc) <= 32:
                 return {"ok": False, "error": f"Не удалось запустить от администратора (код {rc})"}

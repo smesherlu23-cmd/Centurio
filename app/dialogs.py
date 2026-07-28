@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import shlex
 import threading
 from collections import Counter
@@ -8,7 +9,17 @@ import flet as ft
 
 from . import colors as C
 from .format import ICON_PACK, T, cat_icon, initials
-from .store import hue_from_string
+
+
+def new_hue() -> int:
+    """A fresh tile colour for a brand-new entry.
+
+    Random on purpose, not derived from an object's address. This used to be
+    hue_from_string(str(id(object()))) — an object that died on the same line,
+    so CPython handed the freed address straight back and every new app in a
+    row came out the identical colour.
+    """
+    return random.randrange(360)
 
 
 def _field_label(text):
@@ -42,10 +53,9 @@ def _primary_btn(label, on_click):
 
 
 def confirm(app_ui, title, confirm_label, on_confirm, danger=True):
-    page = app_ui.page
 
     def do():
-        page.close(dialog)
+        app_ui.close_dialog(dialog)
         on_confirm()
 
     confirm_btn = ft.Container(
@@ -57,10 +67,10 @@ def confirm(app_ui, title, confirm_label, on_confirm, danger=True):
         modal=True, bgcolor=C.PANEL,
         title=T(title, size=17, weight=ft.FontWeight.BOLD, color=C.TEXT),
         actions=[ft.Row([ft.Container(expand=True),
-                         _outline_btn("Отмена", None, lambda: page.close(dialog)),
+                         _outline_btn("Отмена", None, lambda: app_ui.close_dialog(dialog)),
                          confirm_btn])],
         shape=ft.RoundedRectangleBorder(radius=16))
-    page.open(dialog)
+    app_ui.open_dialog(dialog)
 
 
 def _menu_item(icon, label, on_click, danger=False):
@@ -75,14 +85,13 @@ def _menu_item(icon, label, on_click, danger=False):
 
 
 def open_context_menu(app_ui, app):
-    page = app_ui.page
     store = app_ui.store
     fav = app.get("favorite")
     quick = app.get("quick")
 
     def close_then(fn):
         def h():
-            page.close(dialog)
+            app_ui.close_dialog(dialog)
             fn()
         return h
 
@@ -123,7 +132,7 @@ def open_context_menu(app_ui, app):
         actions=[ft.Divider(height=1, color=C.LINE_2), delete_btn],
         actions_padding=ft.padding.only(12, 0, 12, 8),
         shape=ft.RoundedRectangleBorder(radius=16))
-    page.open(dialog)
+    app_ui.open_dialog(dialog)
 
 
 def _remove(app_ui, app_id):
@@ -339,10 +348,10 @@ def open_add_picker(app_ui):
         content=body,
         actions=[ft.Row([_outline_btn("Указать файл вручную", ft.Icons.FOLDER_OPEN, browse),
                          ft.Container(expand=True),
-                         _outline_btn("Готово", None, lambda: page.close(dialog)),
+                         _outline_btn("Готово", None, lambda: app_ui.close_dialog(dialog)),
                          add_btn])],
         shape=ft.RoundedRectangleBorder(radius=16))
-    page.open(dialog)
+    app_ui.open_dialog(dialog)
     # A rescan already walked the Start Menu, the registry and every Steam
     # library a moment ago and told the user how many new programs it saw.
     # Scanning again just to show them would repeat all of that work.
@@ -362,8 +371,10 @@ def _open_detail_dialog(app_ui, existing):
     draft = dict(existing) if existing else {
         "name": "", "path": "", "sub": "",
         "category_id": cats[0]["id"] if cats else "work",
-        "hue": hue_from_string(str(id(object()))), "favorite": False, "quick": False,
+        "hue": new_hue(), "favorite": False, "quick": False,
     }
+    # Only reachable for an edit: a stored record could in principle carry a
+    # non-numeric hue. New drafts above are always given one.
     if not isinstance(draft.get("hue"), int):
         draft["hue"] = 210
 
@@ -524,7 +535,7 @@ def _open_detail_dialog(app_ui, existing):
         else:
             repoint = False
             store.add_app(draft)
-        page.close(dialog)
+        app_ui.close_dialog(dialog)
         app_ui._on_library_changed()
         app_ui._toast("Сохранено" if is_edit else "Приложение добавлено")
         if repoint or not is_edit:
@@ -533,7 +544,7 @@ def _open_detail_dialog(app_ui, existing):
     def remove():
         def do():
             store.remove_app(existing["id"])
-            page.close(dialog)
+            app_ui.close_dialog(dialog)
             app_ui._on_library_changed()
             app_ui._toast("Удалено")
         confirm(app_ui, f"Удалить «{existing['name']}»?", "Удалить", do)
@@ -569,7 +580,7 @@ def _open_detail_dialog(app_ui, existing):
             border=ft.border.all(1, "#5a2a2a"), border_radius=9,
             on_click=lambda e: remove(), alignment=ft.alignment.center))
     actions += [ft.Container(expand=True),
-                _outline_btn("Отмена", None, lambda: page.close(dialog)),
+                _outline_btn("Отмена", None, lambda: app_ui.close_dialog(dialog)),
                 _primary_btn("Сохранить" if is_edit else "Добавить", save)]
 
     dialog = ft.AlertDialog(
@@ -580,7 +591,7 @@ def _open_detail_dialog(app_ui, existing):
         actions=[ft.Row(actions, spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)],
         shape=ft.RoundedRectangleBorder(radius=16),
     )
-    page.open(dialog)
+    app_ui.open_dialog(dialog)
 
 
 def _mini_btn(icon, on_click, color=None, disabled=False):
@@ -671,10 +682,10 @@ def open_categories_dialog(app_ui, focus_id=None):
         modal=True, bgcolor=C.PANEL,
         title=T("Категории", size=18, weight=ft.FontWeight.BOLD, color=C.TEXT),
         content=body,
-        actions=[ft.Row([ft.Container(expand=True), _primary_btn("Готово", lambda: page.close(dialog))])],
+        actions=[ft.Row([ft.Container(expand=True), _primary_btn("Готово", lambda: app_ui.close_dialog(dialog))])],
         shape=ft.RoundedRectangleBorder(radius=16),
     )
-    page.open(dialog)
+    app_ui.open_dialog(dialog)
     if focus_id:
         try:
             body.scroll_to(key=focus_id, duration=300)
@@ -706,7 +717,6 @@ def _inline_name_field(app_ui, cat, rebuild):
 
 
 def _open_category_editor(app_ui, cat, on_done):
-    page = app_ui.page
     store = app_ui.store
     draft = {"name": cat["name"], "color": C.category_color(cat), "icon": cat.get("icon")}
 
@@ -801,7 +811,7 @@ def _open_category_editor(app_ui, cat, on_done):
     def save():
         store.update_category(cat["id"], {"name": draft["name"].strip() or "Категория",
                                           "color": draft["color"], "icon": draft["icon"]})
-        page.close(dlg)
+        app_ui.close_dialog(dlg)
         on_done()
         app_ui._on_library_changed()
 
@@ -823,14 +833,13 @@ def _open_category_editor(app_ui, cat, on_done):
         title=T("Категория", size=18, weight=ft.FontWeight.BOLD, color=C.TEXT),
         content=body,
         actions=[ft.Row([ft.Container(expand=True),
-                         _outline_btn("Отмена", None, lambda: page.close(dlg)),
+                         _outline_btn("Отмена", None, lambda: app_ui.close_dialog(dlg)),
                          _primary_btn("Сохранить", save)])],
         shape=ft.RoundedRectangleBorder(radius=16))
-    page.open(dlg)
+    app_ui.open_dialog(dlg)
 
 
 def open_settings_dialog(app_ui):
-    page = app_ui.page
     store = app_ui.store
     s = store.state()["settings"]
     accents = ["#f5f5f7", "#4f7dff", "#3ecfaf", "#f0a020"]
@@ -895,14 +904,14 @@ def open_settings_dialog(app_ui):
                spacing=8, wrap=True, run_spacing=8),
         ft.Container(height=12),
         _outline_btn("Управление категориями", ft.Icons.FOLDER,
-                     lambda: (page.close(dialog), open_categories_dialog(app_ui))),
+                     lambda: (app_ui.close_dialog(dialog), open_categories_dialog(app_ui))),
     ], spacing=6, tight=True, scroll=ft.ScrollMode.AUTO, width=460)
 
     dialog = ft.AlertDialog(
         modal=True, bgcolor=C.PANEL,
         title=T("Настройки", size=18, weight=ft.FontWeight.BOLD, color=C.TEXT),
         content=body,
-        actions=[ft.Row([ft.Container(expand=True), _primary_btn("Готово", lambda: page.close(dialog))])],
+        actions=[ft.Row([ft.Container(expand=True), _primary_btn("Готово", lambda: app_ui.close_dialog(dialog))])],
         shape=ft.RoundedRectangleBorder(radius=16),
     )
-    page.open(dialog)
+    app_ui.open_dialog(dialog)

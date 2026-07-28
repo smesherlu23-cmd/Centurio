@@ -38,9 +38,6 @@ DEFAULT_SETTINGS = {
     "icon_schema": 0,
 }
 
-CATEGORY_ICONS = ["work", "brush", "sports_esports", "code", "folder",
-                  "movie", "music_note", "chat", "terminal", "rocket_launch"]
-
 
 def hue_from_string(text: str) -> int:
     # usedforsecurity=False: this only picks a stable tile colour, and without

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 import flet as ft
@@ -17,6 +18,37 @@ from app.tray import TrayController
 from app.ui import CenturioUI
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+
+# Window moves and resizes arrive in bursts; this is how long the last one
+# waits before the geometry is written out.
+GEOMETRY_FLUSH_DELAY = 0.5
+
+# How often the "Автообновление списка" setting is acted on, when it is on.
+AUTO_RESCAN_INTERVAL = 900
+
+
+def shutdown(store=None, tray=None, launcher=None, hotkeys=None, geometry_flush=None):
+    """Release what the app grabbed, in an order that can't lose data.
+
+    The store is flushed first, then the background machinery is told to stop.
+    Everything is optional and every step is independently guarded: quitting
+    must not be blocked by a tray icon that has already died, and until this
+    existed nothing ever called TrayController.stop() or stop_monitor() at all
+    — shutdown relied entirely on daemon threads and os._exit.
+    """
+    for label, step in (("flushing the store", getattr(store, "flush", None)),
+                        ("cancelling the geometry flush",
+                         getattr(geometry_flush, "cancel", None)),
+                        ("stopping the hotkey listener", getattr(hotkeys, "stop", None)),
+                        ("stopping the process monitor",
+                         getattr(launcher, "stop_monitor", None)),
+                        ("stopping the tray icon", getattr(tray, "stop", None))):
+        if step is None:
+            continue
+        try:
+            step()
+        except Exception:
+            log.exception("%s on quit failed", label)
 
 
 def main(page: ft.Page):
@@ -59,12 +91,14 @@ def main(page: ft.Page):
         page.window.prevent_close = True
 
     launcher = Launcher()
+    # Bound further down, but named here so quit_app can close over them and
+    # still be safe if the tray's "Выход" somehow fires before they exist.
+    hotkeys = None
+    geometry_flush = None
 
     def quit_app():
-        try:
-            store.flush()
-        except Exception:
-            log.exception("flushing store on quit failed")
+        shutdown(store=store, tray=tray, launcher=launcher,
+                 hotkeys=hotkeys, geometry_flush=geometry_flush)
         _quit(page)
 
     tray = TrayController(icon_path, on_show=lambda: _show_window(page), on_quit=quit_app)
@@ -117,6 +151,11 @@ def main(page: ft.Page):
     launcher.on_change = lambda ids: ui.set_running(ids)
 
     def on_key(e: ft.KeyboardEvent):
+        # The page keeps receiving key events while a modal dialog is up, and
+        # the window behind it acted on every one: arrows moved a selection
+        # nobody could see, Enter launched whatever they landed on.
+        if ui.dialog_open:
+            return
         key = e.key
         if e.ctrl and key.lower() == "k":
             ui.search_field.focus()
@@ -147,16 +186,13 @@ def main(page: ft.Page):
             ui.activate_selected()
     page.on_keyboard_event = on_key
 
-
-    _GEOMETRY_FLUSH_DELAY = 0.5
-
     def _flush_geometry():
         try:
             store.flush()
         except Exception:
             log.exception("flushing window geometry failed")
 
-    geometry_flush = Debounce(_GEOMETRY_FLUSH_DELAY, _flush_geometry)
+    geometry_flush = Debounce(GEOMETRY_FLUSH_DELAY, _flush_geometry)
 
     def save_window(flush: bool = False):
         try:
@@ -201,9 +237,8 @@ def main(page: ft.Page):
     launcher.start_monitor()
 
     def _auto_rescan_loop():
-        import time as _t
         while True:
-            _t.sleep(900)  
+            time.sleep(AUTO_RESCAN_INTERVAL)
             try:
                 if store.state()["settings"].get("auto_rescan"):
                     ui._rescan(silent=True)
@@ -231,18 +266,21 @@ def app_paths_dir(store):
 
 
 def _show_window(page):
+    # Both halves are guarded separately and neither is fatal: restoring a
+    # window can fail on a disconnected session or a torn-down page, and the
+    # tray click that asked for it must not die with a traceback.
     try:
         page.window.visible = True
         page.window.minimized = False
         page.update()
     except Exception:
-        pass
+        log.exception("restoring the window failed")
     try:
         page.window.to_front()
         page.window.focused = True
         page.update()
     except Exception:
-        pass
+        log.exception("bringing the window to the front failed")
 
 
 def _hide_window(page):
@@ -250,7 +288,7 @@ def _hide_window(page):
         page.window.visible = False
         page.update()
     except Exception:
-        pass
+        log.exception("hiding the window failed")
 
 
 def _quit(page):
@@ -258,6 +296,7 @@ def _quit(page):
         page.window.prevent_close = False
         page.window.destroy()
     except Exception:
+        log.exception("closing the window failed, exiting the hard way")
         os._exit(0)
 
 # The launcher lives in the repository-root main.py — this module only builds

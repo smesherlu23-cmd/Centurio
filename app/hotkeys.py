@@ -112,10 +112,13 @@ class HotkeyManager:
         return self.available and (accel or "").strip().lower() in self.bound
 
     def _fire(self, app_id):
+        # Runs on pynput's listener thread, where an escaping exception kills
+        # the listener and takes every other hotkey with it — so it is caught,
+        # but not swallowed silently.
         try:
             self.on_trigger(app_id)
         except Exception:
-            pass
+            log.exception("global hotkey handler for %s failed", app_id)
 
     def stop(self):
         if self._listener:

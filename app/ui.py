@@ -11,11 +11,10 @@ from . import __version__
 from . import colors as C
 from . import log
 from . import queries
-from .format import (
-    CATEGORY_ICON_CHOICES, T, cat_icon, initials, plu_apps, plu_cats, time_ago)
+from .format import T, cat_icon, initials, plu_apps, plu_cats, time_ago
 from .hotkeys import quick_accels
-from .images import ( 
-    _img_size, _is_launcher_art, _MIN_ART_PX, app_hue, icon_image, img_b64)
+from .images import (
+    MIN_ART_PX, app_hue, icon_image, img_b64, img_size, is_launcher_art)
 from .store import Store
 from .view_state import ViewState
 
@@ -48,6 +47,10 @@ class CenturioUI:
         # followed by "Добавить приложение" doesn't scan the machine twice.
         self._discovered = None
         self._discovered_at = 0.0
+        # Modal dialogs currently up. page.close() only flips control.open and
+        # leaves the dialog on the page, so there is nothing to inspect after
+        # the fact — the count has to be kept here.
+        self._open_dialogs: set = set()
 
         self.search_field = ft.TextField(
             value="", hint_text="Поиск приложений…", border=ft.InputBorder.NONE,
@@ -178,7 +181,7 @@ class CenturioUI:
         return container
 
     def _chip_visual(self, a, size, letter_size, radius):
-        fit = ft.ImageFit.COVER if _is_launcher_art(a) else ft.ImageFit.CONTAIN
+        fit = ft.ImageFit.COVER if is_launcher_art(a) else ft.ImageFit.CONTAIN
         img = icon_image(a.get("icon"), width=size, height=size, fit=fit)
         if img:
             return ft.Container(
@@ -194,8 +197,8 @@ class CenturioUI:
 
     def _cover_content(self, a, cover_h):
         icon_path = a.get("icon")
-        size = _img_size(icon_path)
-        if _is_launcher_art(a) and size and max(size) >= _MIN_ART_PX and icon_image(icon_path):
+        size = img_size(icon_path)
+        if is_launcher_art(a) and size and max(size) >= MIN_ART_PX and icon_image(icon_path):
             if "logo" in os.path.basename(str(icon_path)).lower():
                 return ft.Container(
                     icon_image(icon_path, fit=ft.ImageFit.CONTAIN, expand=True),
@@ -601,7 +604,7 @@ class CenturioUI:
 
     def _use_poster(self, a):
         return bool(self._settings.get("game_posters", True)
-                    and _is_launcher_art(a) and img_b64(a.get("poster")))
+                    and is_launcher_art(a) and img_b64(a.get("poster")))
 
     def _grid(self, apps):
         tiles = [self._draggable_tile(a, apps) for a in apps]
@@ -968,6 +971,32 @@ class CenturioUI:
             self._toast(f"Не удалось сохранить данные: {message}", error=True)
         except Exception:
             log.exception("reporting a store write failure to the user failed")
+
+    @property
+    def dialog_open(self) -> bool:
+        """True while a modal dialog is up.
+
+        The page's keyboard handler keeps firing behind a modal dialog, so
+        without this the arrow keys moved the selection in the window nobody
+        was looking at and Enter launched whatever it landed on.
+        """
+        return bool(self._open_dialogs)
+
+    def open_dialog(self, dialog):
+        previous = getattr(dialog, "on_dismiss", None)
+
+        def dismissed(e):
+            self._open_dialogs.discard(dialog)
+            if previous is not None:
+                previous(e)
+
+        dialog.on_dismiss = dismissed
+        self._open_dialogs.add(dialog)
+        self.page.open(dialog)
+
+    def close_dialog(self, dialog):
+        self._open_dialogs.discard(dialog)
+        self.page.close(dialog)
 
     def _toast(self, msg, error=False):
         icon = ft.Icons.ERROR_OUTLINE if error else ft.Icons.CHECK_CIRCLE_OUTLINE

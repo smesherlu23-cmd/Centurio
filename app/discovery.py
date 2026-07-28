@@ -381,9 +381,9 @@ def _http_get(url: str, timeout: int = _CDN_TIMEOUT) -> bytes | None:
     req = urllib.request.Request(url, headers={"User-Agent": "Centurio"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            if getattr(resp, "status", 200) != 200:
-                _cdn_record(True)
-                return None
+            # No status check: urlopen raises HTTPError for everything that
+            # isn't 2xx, and a 2xx without a body (204) falls out of the
+            # caller's own "at least 1 KB of image" test anyway.
             data = resp.read(_CDN_MAX_BYTES + 1)
     except urllib.error.HTTPError:
         # The server answered (404 for missing art) — the network itself is fine.

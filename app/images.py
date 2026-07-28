@@ -10,7 +10,7 @@ import flet as ft
 from .store import hue_from_string
 
 _RASTER_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
-_MIN_ART_PX = 160
+MIN_ART_PX = 160
 _MISS = object()
 
 
@@ -116,12 +116,12 @@ def icon_image(path, **kw) -> "ft.Image | None":
     return None
 
 
-def _is_launcher_art(a) -> bool:
+def is_launcher_art(a) -> bool:
     path = a.get("path") or ""
     return path.startswith("steam://") or path.startswith("com.epicgames.launcher://")
 
 
-def _img_size(path) -> tuple[int, int] | None:
+def img_size(path) -> tuple[int, int] | None:
     if not path or not str(path).lower().endswith(_RASTER_EXT):
         return None
     key = str(path)

@@ -9,9 +9,6 @@ import time
 
 import flet as ft
 
-CATEGORY_ICON_CHOICES = ["work", "brush", "sports_esports", "code", "folder",
-                         "movie", "music_note", "chat", "terminal", "rocket_launch"]
-
 ICON_PACK = [
     "work", "business", "apartment", "store", "home", "folder", "folder_special",
     "code", "terminal", "data_object", "bug_report", "build", "engineering", "memory",

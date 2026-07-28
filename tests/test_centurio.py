@@ -630,6 +630,12 @@ def test_autostart():
         ok(autostart.sync(False) is False, "sync keeps 'off' outside Windows")
 
 
+def types_ns(**kw):
+    """A stand-in object with just the attributes a test hands it."""
+    import types
+    return types.SimpleNamespace(**kw)
+
+
 def _find_control(node, pred, _depth=0):
     """Depth-first search of a built Flet tree, so dialog tests don't index
     into `content.controls[2].controls[0]` and break on every re-layout."""
@@ -651,6 +657,56 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def _read(*parts) -> str:
     with open(os.path.join(_ROOT, *parts), encoding="utf-8") as fh:
         return fh.read()
+
+
+def test_no_duplicate_icon_lists():
+    """format.ICON_PACK is the one list of category icons.
+
+    store.CATEGORY_ICONS and format.CATEGORY_ICON_CHOICES were byte-identical
+    copies of each other that nothing read.
+    """
+    from app import format as fmt
+    from app import store as store_mod
+
+    ok(not hasattr(store_mod, "CATEGORY_ICONS"), "store carries no icon list of its own")
+    ok(not hasattr(fmt, "CATEGORY_ICON_CHOICES"), "the unread choices copy is gone")
+    ok(isinstance(fmt.ICON_PACK, list) and len(fmt.ICON_PACK) > 10,
+       "ICON_PACK is the surviving list")
+    ok("CATEGORY_ICON" not in _read("app", "ui.py"),
+       "ui.py no longer imports a constant it never used")
+
+
+def test_admin_argument_quoting():
+    """The elevated command line is built with Windows' own quoting rules."""
+    import subprocess
+
+    from app.launcher import Launcher
+
+    built = []
+
+    class FakeShell:
+        @staticmethod
+        def ShellExecuteW(_h, _verb, _path, params, _cwd, _show):
+            built.append(params)
+            return 42
+
+    lch = Launcher()
+    real_ctypes = sys.modules.get("ctypes")
+    fake = types_ns(windll=types_ns(shell32=FakeShell()))
+    sys.modules["ctypes"] = fake
+    try:
+        args = ["--profile", "hello world", 'we"ird', r"C:\p ath" + "\\"]
+        res = lch._run_as_admin(r"C:\x\app.exe", args, r"C:\x")
+        ok(res.get("ok") is True, "a successful ShellExecuteW is reported as ok")
+        ok(built and built[0] == subprocess.list2cmdline(args),
+           f"arguments are quoted the way subprocess quotes them ({built})")
+        ok(built and '\\"' in built[0],
+           "an embedded quote is escaped instead of breaking the command line")
+    finally:
+        if real_ctypes is None:
+            sys.modules.pop("ctypes", None)
+        else:
+            sys.modules["ctypes"] = real_ctypes
 
 
 def test_packaging_metadata():
@@ -1466,6 +1522,140 @@ def test_ui_refresh_thread_safety():
         ok(ui._snapshot is None, "no snapshot is left behind after the storm")
 
 
+def test_shutdown_releases_resources():
+    """Quitting used to rely entirely on daemon threads and os._exit.
+
+    Nothing called TrayController.stop() or Launcher.stop_monitor(), so the
+    tray icon and the psutil poll were left to be killed by process exit.
+    """
+    try:
+        from app import main as main_mod
+    except Exception as exc:
+        skip("shutdown test", exc)
+        return
+
+    # Checked rather than imported directly: a missing name would otherwise
+    # come back as an ImportError and turn this into a skip, not a failure.
+    ok(hasattr(main_mod, "shutdown"), "app.main exposes a shutdown routine")
+    shutdown = main_mod.shutdown
+
+    # The flag alone isn't the fix — on_key has to consult it. That handler is
+    # a closure inside main(), so the wiring is asserted on the source.
+    page_module = _read("app", "main.py")
+    ok("if ui.dialog_open:" in page_module,
+       "the page's key handler stands down while a dialog is open")
+
+    calls = []
+
+    class Recorder:
+        def __init__(self, label, boom=False):
+            self.label = label
+            self.boom = boom
+
+        def __call__(self):
+            calls.append(self.label)
+            if self.boom:
+                raise RuntimeError(f"{self.label} is already gone")
+
+    store = types_ns(flush=Recorder("flush"))
+    tray = types_ns(stop=Recorder("tray"))
+    launcher = types_ns(stop_monitor=Recorder("monitor"))
+    hotkeys = types_ns(stop=Recorder("hotkeys"))
+    geometry = types_ns(cancel=Recorder("geometry"))
+
+    shutdown(store=store, tray=tray, launcher=launcher, hotkeys=hotkeys,
+             geometry_flush=geometry)
+    ok(set(calls) == {"flush", "geometry", "hotkeys", "monitor", "tray"},
+       f"every resource is released ({calls})")
+    ok(calls[0] == "flush", "the store is flushed before anything is torn down")
+
+    calls.clear()
+    shutdown(store=types_ns(flush=Recorder("flush", boom=True)),
+             tray=types_ns(stop=Recorder("tray")),
+             launcher=types_ns(stop_monitor=Recorder("monitor")))
+    ok("tray" in calls and "monitor" in calls,
+       "a step that raises doesn't stop the rest of the teardown")
+
+    raised = None
+    try:
+        shutdown()
+    except Exception as exc:
+        raised = exc
+    ok(raised is None, "shutdown with nothing to release is a quiet no-op")
+
+
+def test_ui_dialog_suppresses_shortcuts():
+    """Key events keep arriving behind a modal dialog."""
+    try:
+        from unittest.mock import MagicMock
+
+        from app import dialogs
+        from app.ui import CenturioUI
+    except Exception as exc:
+        skip("UI dialog-shortcut test", exc)
+        return
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        store.add_app({"name": "App", "path": "/x/a", "category_id": "work"})
+        page = _FakePage()
+        ui = CenturioUI(page, store, MagicMock())
+        ok(ui.dialog_open is False, "no dialog is open to start with")
+
+        dialogs.open_context_menu(ui, store.state()["apps"][0])
+        ok(ui.dialog_open is True, "opening a dialog raises the flag")
+        opened = page.opened[-1]
+        ui.close_dialog(opened)
+        ok(ui.dialog_open is False, "closing it lowers the flag again")
+
+        # Dismissing without the buttons (Flet's own dismiss path) must also
+        # clear it, or the window's shortcuts stay dead for good.
+        dialogs.open_context_menu(ui, store.state()["apps"][0])
+        ok(ui.dialog_open is True, "second dialog opens")
+        page.opened[-1].on_dismiss(None)
+        ok(ui.dialog_open is False, "an on_dismiss also lowers the flag")
+
+        # Nested dialogs: the context menu opens a confirm on top of itself.
+        dialogs.open_context_menu(ui, store.state()["apps"][0])
+        menu = page.opened[-1]
+        dialogs.confirm(ui, "T", "OK", lambda: None)
+        ui.close_dialog(page.opened[-1])
+        ok(ui.dialog_open is True,
+           "closing the top dialog doesn't unlock the shortcuts under it")
+        ui.close_dialog(menu)
+        ok(ui.dialog_open is False, "closing the last one unlocks them")
+
+
+def test_ui_new_app_hue_varies():
+    """New tiles used to hash id(object()) — an address CPython reuses."""
+    try:
+        from unittest.mock import MagicMock
+
+        from app import dialogs
+        from app.ui import CenturioUI
+    except Exception as exc:
+        skip("UI hue test", exc)
+        return
+
+    # Tested at the source rather than through the dialog: building a dialog
+    # allocates enough to move the next address along, so the old scheme looked
+    # varied here while producing one single colour in a tight loop.
+    drawn = [dialogs.new_hue() for _ in range(48)]
+    ok(all(isinstance(h, int) and 0 <= h < 360 for h in drawn),
+       "every generated hue is an int in range")
+    ok(len(set(drawn)) > 20,
+       f"consecutive draws differ ({len(set(drawn))} distinct out of 48)")
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        page = _FakePage()
+        ui = CenturioUI(page, store, MagicMock())
+        dialogs._open_detail_dialog(ui, None)
+        slider = _find_control(page.opened[-1], lambda c: getattr(c, "max", None) == 359)
+        ok(slider is not None and 0 <= slider.value < 360,
+           "a draft dialog opens with a usable hue on its slider")
+
+
 def test_ui_categories_dialog_reads():
     """Rebuilding the category list used to deep-copy the library per row."""
     try:
@@ -1567,6 +1757,8 @@ if __name__ == "__main__":
     test_hotkey_no_double_launch()
     test_geometry_debounce()
     test_autostart()
+    test_no_duplicate_icon_lists()
+    test_admin_argument_quoting()
     test_packaging_metadata()
     test_single_entry_point()
     test_colors()
@@ -1586,6 +1778,9 @@ if __name__ == "__main__":
     test_ui_refresh_thread_safety()
     test_ui_categories_dialog_reads()
     test_ui_background_rescan()
+    test_shutdown_releases_resources()
+    test_ui_dialog_suppresses_shortcuts()
+    test_ui_new_app_hue_varies()
     code, line = _summarize(_passed, _failed, _skipped, bool(os.environ.get("CI")))
     print(f"\n{line}")
     sys.exit(code)
