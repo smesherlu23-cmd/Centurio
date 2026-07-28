@@ -32,6 +32,32 @@ def to_pynput(accel: str) -> str:
     return "+".join(out)
 
 
+# Combinations offered for showing and hiding "Запуск". Anything here has to
+# survive to_pynput() and be unlikely to collide with a program's own shortcut.
+LAUNCH_HOTKEYS = ("Ctrl+Space", "Alt+Space", "Ctrl+Shift+Space", "Ctrl+Alt+Space")
+
+_KEY_LABELS = {"space": "Пробел", "enter": "Ввод", "esc": "Esc", "escape": "Esc",
+               "tab": "Tab", "backspace": "Backspace"}
+
+
+def format_accel(accel: str | None) -> str:
+    """How a combination is spelled on screen: "Ctrl+Space" -> "Ctrl+Пробел"."""
+    if not accel:
+        return "не задана"
+    parts = []
+    for raw in str(accel).split("+"):
+        token = raw.strip()
+        if not token:
+            continue
+        parts.append(_KEY_LABELS.get(token.lower(), token if len(token) > 1 else token.upper()))
+    return "+".join(parts)
+
+
+# The id the launch-window toggle is registered under. It is not an app, so the
+# trigger callback has to tell it apart from one.
+TOGGLE_LAUNCH = "__centurio_toggle_launch__"
+
+
 class HotkeyManager:
     def __init__(self, on_trigger):
         self.on_trigger = on_trigger

@@ -7,6 +7,8 @@ themselves otherwise. Run with:  python tests/test_centurio.py
 import os
 import sys
 import tempfile
+import time
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -69,7 +71,6 @@ def test_store():
 
         a = s.add_app({"name": "VS Code", "path": "/usr/bin/code", "category_id": "dev"})
         ok(bool(a["id"]), "add_app returns id")
-        ok(0 <= a["hue"] < 360, "hue in range")
 
         s.update_app(a["id"], {"favorite": True, "sub": "Редактор"})
         ok(s.get_app(a["id"])["favorite"] is True, "favorite toggled")
@@ -91,34 +92,34 @@ def test_store():
            "launch options updated")
 
         b = s.add_app({"name": "Zed", "path": "/z", "category_id": "dev"})
-        s.reorder_apps([b["id"], a["id"]])
-        ok(s.get_app(b["id"])["order"] == 0 and s.get_app(a["id"])["order"] == 1,
-           "reorder_apps assigns order")
-        s.remove_app(b["id"])  
+        ok(s.get_app(b["id"])["order"] == 1, "add_app appends in library order")
+        s.remove_app(b["id"])
 
-        s.set_setting("view_mode", "list")
         s.set_setting("view_filter", "favorites")
-        ok(Store(path).state()["settings"]["view_mode"] == "list", "view_mode persisted")
+        s.set_setting("calm", True)
         ok(Store(path).state()["settings"]["view_filter"] == "favorites", "view_filter persisted")
+        ok(Store(path).state()["settings"]["calm"] is True, "«Спокойный вид» persisted")
 
         s.mark_launched(a["id"])
         ok(s.get_app(a["id"])["launch_count"] == 1, "launch_count incremented")
         ok(s.get_app(a["id"])["last_launched"] > 0, "last_launched set")
 
         cat = s.add_category("Тест")
-        ok(cat["icon"] is None and cat["color"] == "#ffffff",
-           "new category: letter chip, neutral white colour")
+        ok(cat["icon"] == "folder" and cat["color"] in C.CAT_PALETTE,
+           "a new category starts with a glyph and a palette colour")
         s.update_category(cat["id"], {"color": "#ff8800", "icon": "sports_esports"})
         got_cat = next(c for c in s.state()["categories"] if c["id"] == cat["id"])
         ok(got_cat["color"] == "#ff8800" and got_cat["icon"] == "sports_esports",
            "category colour + icon updated")
 
-        s.move_category(cat["id"], -1) 
         order_ids = [c["id"] for c in sorted(s.state()["categories"], key=lambda c: c["order"])]
-        ok(order_ids.index(cat["id"]) == len(order_ids) - 2, "move_category shifts order")
+        s.reorder_categories([order_ids[-1]] + order_ids[:-1])
+        moved = [c["id"] for c in sorted(s.state()["categories"], key=lambda c: c["order"])]
+        ok(moved[0] == order_ids[-1], "dragging a category in the rail reorders it")
 
         s.update_app(a["id"], {"category_id": cat["id"]})
-        s.remove_category(cat["id"])
+        undo = s.remove_category(cat["id"])
+        ok(undo is not None, "remove_category reports what it removed")
         ok(s.get_app(a["id"])["category_id"] == s.state()["categories"][0]["id"],
            "orphaned app reassigned")
 
@@ -141,6 +142,49 @@ def test_store():
 
         ok(hue_from_string("Notion") == hue_from_string("Notion"), "hue deterministic")
         ok(0 <= hue_from_string("X") < 360, "hue bounded")
+
+
+def test_store_sets_and_undo():
+    """Deleting is not confirmed any more — it is undone, so it has to be
+    reversible in the store, not just in the window."""
+    with tempfile.TemporaryDirectory() as d:
+        s = Store(os.path.join(d, "data.json"))
+        one = s.add_app({"name": "Notion", "path": "/x/n", "category_id": "work"})
+        two = s.add_app({"name": "Figma", "path": "/x/f", "category_id": "create"})
+
+        rec = s.add_set("Рабочее утро", [one["id"], two["id"], "no-such-app"])
+        ok(rec is not None and rec["apps"] == [one["id"], two["id"]],
+           "a set keeps only ids the library actually has")
+        ok(s.add_set("Пустой", ["ghost"]) is None, "a set with nothing real in it isn't stored")
+
+        gone = s.remove_apps([one["id"]])
+        ok([g["id"] for g in gone] == [one["id"]], "remove_apps hands back what it removed")
+        ok(s.state()["sets"][0]["apps"] == [two["id"]],
+           "a removed app leaves the sets it was in")
+        ok(s.restore_apps(gone) == 1, "the removed record goes back in")
+        ok(s.restore_apps(gone) == 0, "restoring twice doesn't duplicate it")
+        ok(len(s.state()["apps"]) == 2, "the library is whole again")
+
+        moved = s.update_apps([one["id"], two["id"]], {"favorite": True})
+        ok(moved == 2, "update_apps patches every id it was given")
+        ok(all(a["favorite"] for a in s.state()["apps"]), "and the patch landed")
+
+        undo = s.remove_category("create")
+        ok(undo and undo["category"]["id"] == "create", "remove_category returns the record")
+        ok(two["id"] in undo["apps"], "and the apps it had to reassign")
+        ok(s.get_app(two["id"])["category_id"] != "create", "those apps moved to the fallback")
+        ok(s.restore_category(undo) is True, "the category can be put back")
+        ok(s.get_app(two["id"])["category_id"] == "create", "and its apps come back with it")
+
+        set_rec = s.remove_set(rec["id"])
+        ok(set_rec and set_rec["id"] == rec["id"], "remove_set returns what it removed")
+        ok(s.restore_set(set_rec) is True and len(s.state()["sets"]) == 1, "and it restores")
+
+        # A set whose members were all deleted between two runs is not worth
+        # keeping: it would launch nothing and still count its members.
+        s.data["sets"] = [{"id": "dead", "name": "Dead", "apps": ["ghost"]}]
+        s.flush()
+        ok(Store(s.path).state()["sets"] == [], "a set that lost every member is dropped on load")
 
 
 def test_store_concurrency():
@@ -215,14 +259,13 @@ def test_store_load_validation():
         junk = by_id.get("junk-numbers", {})
         ok(all(isinstance(junk.get(k), int) for k in ("order", "added_at", "last_launched")),
            "non-numeric sort keys are coerced")
-        ok(isinstance(junk.get("hue"), int) and 0 <= junk.get("hue", -1) < 360,
-           "a bad hue is re-derived")
         cats = [c for c in state["categories"] if isinstance(c, dict)]
         ok([c.get("id") for c in cats] == ["work", "dup"],
            "unusable categories are dropped and ids deduped")
         ok(state["settings"] == dict(DEFAULT_SETTINGS),
            "settings that aren't an object fall back to the defaults")
-        ok(state["version"] == 1, "a non-numeric version falls back to 1")
+        ok(state["version"] == 2, "the loaded file reports the current schema version")
+        ok(state["sets"] == [], "a file written before sets existed loads with none")
 
         # set_setting() has always refused an unknown key (see "unknown setting
         # rejected" in test_store above); loading used to let one straight
@@ -239,11 +282,12 @@ def test_store_load_validation():
 
         # The sanitised library must survive the operations the UI performs.
         from app import queries
-        sections = queries.build_sections(state["apps"], state["categories"], "all", "", "alpha", set())
+        sections = queries.build_sections(state["apps"], state["categories"], "all", "", set())
         ok(queries.flatten_sections(sections), "sanitised records render into sections")
-        for sort in queries.SORT_KEYS:
-            queries.sort_apps(state["apps"], sort)
-        ok(True, "every sort order works on the sanitised records")
+        ok(queries.launch_rows(state["apps"], "", set(), state["categories"]) is not None,
+           "and into the «Запуск» list")
+        ok(queries.sort_apps(state["apps"]) is not None,
+           "and they sort without tripping over a missing field")
 
 
 def test_store_write_failure():
@@ -553,7 +597,12 @@ def _settle_threads(before, timeout=3.0) -> bool:
     import time
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if not [t for t in threading.enumerate() if t not in before and t.is_alive()]:
+        # A toast's countdown is a threading.Timer that is meant to outlive the
+        # action it reports on — waiting for it would be waiting for the undo
+        # window to expire.
+        live = [t for t in threading.enumerate()
+                if t not in before and t.is_alive() and not isinstance(t, threading.Timer)]
+        if not live:
             return True
         time.sleep(0.01)
     return False
@@ -762,16 +811,43 @@ def test_single_entry_point():
 
 
 def test_colors():
-    c1, c2 = C.cover_colors(200)
-    ok(c1.startswith("#") and len(c1) == 7, "cover color is hex")
-    ok(c1 != c2, "cover gradient has two stops")
-    ok(C.glyph_color(10) == "#ffffff", "glyph colour is white on a red hue")
-    ok(C.glyph_color(240) == "#ffffff", "glyph colour is white on a blue hue")
-    ok(C.glyph_color(60) == C.BG_1, "glyph colour is dark on a bright yellow hue")
-    ok(C.glyph_color(120) == C.BG_1, "glyph colour is dark on a bright green hue")
-    for hue in range(0, 360, 30):
-        col = C.glyph_color(hue)
-        ok(col.startswith("#") and len(col) == 7, f"glyph_color({hue}) is a valid hex colour")
+    """The tokens are the design's, and the UI is not allowed to invent more."""
+    import re as _re
+
+    named = {k: v for k, v in vars(C).items()
+             if k.isupper() and isinstance(v, str) and v.startswith("#")}
+    ok(len(named) > 20, "the token set covers the palette")
+    for name, value in named.items():
+        # Six or eight digits only: Flutter has no CSS shorthand, and a "#e88"
+        # is parsed as transparent — the button it painted came out empty.
+        ok(_re.fullmatch(r"#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})", value),
+           f"{name} is a hex colour Flutter can parse ({value})")
+
+    ok(len(C.CAT_PALETTE) == 8, "a category can be one of eight colours")
+    ok(len(set(C.CAT_PALETTE)) == 8, "and none of them repeat")
+    ok(C.ACCENT in C.ACCENT_CHOICES, "the default accent is one of the offered accents")
+
+    # A category that never picked a colour still has to be told apart from
+    # its neighbours in the rail, and the answer must not move between runs.
+    first = C.category_color({"id": "x", "name": "Работа"})
+    ok(first in C.CAT_PALETTE, "an unset category colour comes from the palette")
+    ok(C.category_color({"id": "x", "name": "Работа"}) == first, "and it is stable")
+    ok(C.category_color({"id": "x", "name": "Работа", "color": "#ffffff"}) == first,
+       "the old white default is treated as unset")
+    ok(C.category_color({"id": "x", "name": "Работа", "color": "#4f7dff"}) == "#4f7dff",
+       "an explicit colour wins")
+
+    ok(C.with_alpha("#101014", 0.6) == "#10101499", "with_alpha appends the byte")
+    ok(C.parse_hex("rgb(255, 0, 8)") == "#ff0008", "parse_hex reads an rgb() triple")
+    ok(C.parse_hex("#abc") == "#aabbcc", "parse_hex expands a short form")
+    ok(C.parse_hex("nonsense") is None, "parse_hex rejects junk")
+    ok(C.hex_to_rgb("#4f7dff") == (0x4f, 0x7d, 0xff), "hex_to_rgb round-trips")
+    ok(C.rgb_to_hex(999, -5, 8) == "#ff0008", "rgb_to_hex clamps")
+
+    # "Дальше пользоваться только ими — хардкод цветов в ui.py не оставлять."
+    for module in ("ui.py", "dialogs.py", "toast.py", "main.py"):
+        stray = set(_re.findall(r'"#[0-9a-fA-F]{3,8}"', _read("app", module)))
+        ok(not stray, f"app/{module} spells no colour of its own ({sorted(stray)})")
 
 
 def test_icon():
@@ -1098,295 +1174,955 @@ def test_log():
 
 def test_queries():
     from app import queries
-    from app.view_state import ViewState
 
     cats = [{"id": "work", "name": "Work", "order": 0}, {"id": "games", "name": "Games", "order": 1}]
     apps = [
         {"id": "1", "name": "Notion", "category_id": "work", "favorite": True, "last_launched": 100},
         {"id": "2", "name": "Chrome", "category_id": "work", "last_launched": 200},
-        {"id": "3", "name": "CS2", "category_id": "games"},
+        {"id": "3", "name": "CS2", "category_id": "games", "quick": True},
         {"id": "4", "name": "Orphan", "category_id": "missing"},
     ]
     running = {"2"}
 
     ok(queries.valid_filter("category:missing", cats) == "all", "valid_filter drops a dead category")
     ok(queries.valid_filter("category:work", cats) == "category:work", "valid_filter keeps a live category")
-    ok(queries.valid_filter("favorites", cats) == "favorites", "valid_filter passes non-category filters through")
+    ok(queries.valid_filter("favorites", cats) == "favorites", "valid_filter passes a fixed filter through")
+    ok(queries.valid_filter("recent", cats) == "all", "a filter the rail no longer has falls back")
 
-    fav = queries.build_sections(apps, cats, "favorites", "", "alpha", running)
-    ok([a["id"] for a in fav[0]["apps"]] == ["1"], "favorites section holds only favourited apps")
+    ids = lambda lst: [a["id"] for a in lst]
+    ok(ids(queries.visible_apps(apps, "favorites", "", running)) == ["1"], "favourites filter")
+    ok(ids(queries.visible_apps(apps, "running", "", running)) == ["2"], "running filter matches the ids set")
+    ok(ids(queries.visible_apps(apps, "pinned", "", running)) == ["3"], "pinned filter")
+    ok(ids(queries.visible_apps(apps, "category:games", "", running)) == ["3"], "category filter")
+    ok(ids(queries.visible_apps(apps, "all", "chrome", running)) == ["2"], "a query narrows the view")
 
-    run = queries.build_sections(apps, cats, "running", "", "alpha", running)
-    ok([a["id"] for a in run[0]["apps"]] == ["2"], "running section matches the running-ids set")
+    sections = queries.build_sections(apps, cats, "all", "", running)
+    ok([s["name"] for s in sections] == ["Work", "Games", "Без категории"],
+       "the grid groups by category in rail order, orphans last")
+    ok(all(s["apps"] for s in sections), "an empty group isn't drawn")
 
-    rec = queries.build_sections(apps, cats, "recent", "", "alpha", running)
-    ok([a["id"] for a in rec[0]["apps"]] == ["2", "1"], "recent section sorts by last_launched, newest first")
+    ok(queries.current_title("category:games", cats) == "Games", "current_title resolves a category")
+    ok(queries.current_title("pinned", cats) == "Закреплённые", "current_title names a fixed filter")
 
-    cat_sec = queries.build_sections(apps, cats, "category:games", "", "alpha", running)
-    ok([a["id"] for a in cat_sec[0]["apps"]] == ["3"], "category section holds only that category's apps")
+    # --- «Запуск» ---
+    rows = queries.launch_rows(apps, "", running, cats)
+    kinds = [(r["kind"], r.get("title") or r["app"]["name"]) for r in rows]
+    ok(kinds[0] == ("head", "СЕЙЧАС ОТКРЫТО"), "what is open comes first")
+    ok(("head", "ПОСЛЕДНЕЕ") in kinds, "then what was open recently")
+    ok([r["app"]["id"] for r in rows if r["kind"] == "app"] == ["2", "1"],
+       "a running app isn't repeated under «последнее»")
+    ok([r["index"] for r in rows if r["kind"] == "app"] == [0, 1],
+       "only app rows are numbered, so the highlight can index them")
 
-    all_sec = queries.build_sections(apps, cats, "all", "", "alpha", running)
-    ok("Без категории" in [s["name"] for s in all_sec],
-       "an app whose category was deleted gets its own section instead of being dropped")
+    hits = queries.launch_rows(apps, "o", running, cats)
+    ok([r["app"]["name"] for r in hits] == ["Orphan", "Chrome", "Notion"],
+       "a match at the start of the name outranks one in the middle")
+    ok(queries.launch_rows(apps, "zzz", running, cats) == [], "no match, no rows")
 
-    search = queries.build_sections(apps, cats, "all", "chrome", "alpha", running)
-    ok(len(search) == 1 and search[0]["apps"][0]["id"] == "2", "a search query overrides the active filter")
+    spans = queries.match_spans("Visual Studio Code", "stu")
+    ok(spans == [("Visual ", False), ("Stu", True), ("dio Code", False)],
+       f"match_spans splits on the hit, keeping the original case ({spans})")
+    ok(queries.match_spans("Notion", "") == [("Notion", False)], "no query, no highlight")
 
-    ok(queries.current_title("category:games", "", cats) == "Games", "current_title resolves a category name")
-    ok(queries.current_title("all", "x", cats) == "Поиск", "current_title shows search state over the filter")
+    # --- экран «Найти и добавить» ---
+    found = [
+        {"name": "Elden Ring", "path": "steam://rungameid/1", "source": "steam"},
+        {"name": "OBS Studio", "path": "C:/pf/obs64.exe", "source": "startmenu"},
+        {"name": "PyCharm", "path": "C:/pf/JetBrains/pycharm.exe", "source": "registry"},
+        {"name": "Notion", "path": "/x/notion.exe", "source": "startmenu"},
+    ]
+    real_cats = [{"id": "work", "name": "Работа"}, {"id": "create", "name": "Творчество"},
+                 {"id": "games", "name": "Игры"}, {"id": "dev", "name": "Разработка"}]
+    groups = queries.group_found(found, {"/x/notion.exe"}, real_cats)
+    ok([g["source"] for g in groups] == ["steam", "startmenu", "registry"],
+       "sources come back in a fixed order")
+    by_source = {g["source"]: g for g in groups}
+    ok(by_source["startmenu"]["total"] == 2 and by_source["startmenu"]["new"] == 1,
+       "a group counts what is already in the library separately")
+    already = [r for r in by_source["startmenu"]["rows"] if not r["is_new"]]
+    ok([r["name"] for r in already] == ["Notion"], "an app already added is flagged, not hidden")
+
+    only_new = queries.group_found(found, {"/x/notion.exe"}, real_cats, only_new=True)
+    names = [r["name"] for g in only_new for r in g["rows"]]
+    ok("Notion" not in names, "«Только новые» hides what is already there")
+
+    ok(queries.suggest_category({"name": "Elden Ring", "source": "steam"}, real_cats) == "games",
+       "Steam means games")
+    ok(queries.suggest_category({"name": "PyCharm", "path": "C:/JetBrains/x.exe",
+                                 "source": "registry"}, real_cats) == "dev",
+       "a known developer tool means development")
+    ok(queries.suggest_category({"name": "Photoshop", "path": "C:/Adobe/Photoshop.exe",
+                                 "source": "startmenu"}, real_cats) == "create",
+       "a graphics package means creative work")
+    ok(queries.suggest_category({"name": "Что-то своё", "path": "C:/x.exe"}, real_cats) == "work",
+       "anything unrecognised falls back to the first category, never to nothing")
+    ok(queries.suggest_category({"name": "X"}, []) is None, "with no categories there is nothing to suggest")
+
+    ok(queries.set_name_for([{"name": "Notion"}, {"name": "Figma"}]) == "Notion и Figma",
+       "a set is named after what is in it")
+    ok(queries.set_name_for([]) == "Набор", "an empty selection still gets a name")
+
+
+def test_view_state():
+    """The window's own state: modes, screens, selection, Esc."""
+    from app.view_state import ViewState
 
     with tempfile.TemporaryDirectory() as d:
         store = Store(os.path.join(d, "data.json"))
-        store.add_category("Work")
         wid = store.state()["categories"][0]["id"]
         store.set_setting("view_filter", f"category:{wid}")
-        vs = ViewState(store)
-        ok(vs.filter == f"category:{wid}", "ViewState restores a persisted, still-valid filter")
 
+        vs = ViewState(store)
+        ok(vs.mode == "library" and vs.screen == "grid", "it opens on the library grid")
+        ok(vs.filter == f"category:{wid}", "a persisted, still-valid filter is restored")
         vs.set_filter("favorites")
         ok(store.state()["settings"]["view_filter"] == "favorites", "set_filter persists immediately")
 
-        # is_all_view drives the rail's "Главное меню" highlight, and it used
-        # to light up for every non-category filter.
-        vs.set_filter("all")
-        ok(vs.is_all_view() is True, "the all-apps view is the all view")
-        for other in ("favorites", "recent", "running", f"category:{wid}"):
-            vs.set_filter(other)
-            ok(vs.is_all_view() is False, f"{other} is not the all view")
+        vs.select_one("a")
+        ok(vs.sel == ["a"] and vs.inspector == "a", "clicking a tile selects it and opens the inspector")
+        vs.toggle_selection("b")
+        ok(vs.sel == ["a", "b"] and vs.inspector == "b", "the corner check adds to the selection")
+        vs.toggle_selection("a")
+        ok(vs.sel == ["b"], "and clicking it again removes")
+        vs.add_many(["c", "d", "b"])
+        ok(vs.sel == ["b", "c", "d"], "selecting a group adds without duplicating")
+        vs.select_all(["a", "b", "c"])
+        ok(vs.sel == ["a", "b", "c"], "Ctrl+A takes everything visible")
+        vs.drop_missing(["a", "c"])
+        ok(vs.sel == ["a", "c"], "ids the library lost are forgotten")
+        ok(vs.inspector == "c", "one that survived still has the inspector")
+        vs.drop_missing(["a"])
+        ok(vs.inspector is None, "but an inspector on a deleted app closes")
 
-        vs.move_selection(1, 3)
-        ok(vs.selected == 0, "move_selection picks the first item from nothing selected")
-        vs.move_selection(1, 3)
-        ok(vs.selected == 1, "move_selection advances by one")
-        vs.move_selection(-5, 3)
-        ok(vs.selected == 0, "move_selection clamps at the start")
+        vs.select_one("a")
+        vs.open_popover(wid)
+        ok(vs.escape() is True and vs.popover is None, "Esc closes the popover first")
+        vs.capture = True
+        ok(vs.escape() is True and vs.capture is False, "then it cancels a hotkey capture")
+        vs.set_screen("settings")
+        ok(vs.escape() is True and vs.screen == "grid", "then it leaves the screen")
+        vs.select_one("a")
+        ok(vs.escape() is True and vs.sel == [], "then it drops the selection")
+        ok(vs.escape() is False, "with nothing left to close it says so, and the window hides")
 
         vs.set_filter(f"category:{wid}")
         store.data["categories"] = []
         vs.revalidate(store.state()["categories"])
         ok(vs.filter == "all", "revalidate falls back once the active category is gone")
 
+        vs.hi = 5
+        vs.move_hi(1, 3)
+        ok(vs.hi == 2, "the launch highlight clamps to the number of rows")
+        vs.move_hi(-9, 3)
+        ok(vs.hi == 0, "and at the top")
+        vs.move_hi(1, 0)
+        ok(vs.hi == 0, "an empty list leaves it at zero")
 
-def test_ui_build():
+
+class _FakeWindow:
+    def __init__(self):
+        self.width = 1180
+        self.height = 768
+        self.left = 0
+        self.top = 0
+        self.maximized = False
+        self.minimized = False
+        self.visible = True
+        self.resizable = True
+        self.min_width = 0
+        self.min_height = 0
+        self.on_event = None
+        self.prevent_close = False
+        self.title_bar_hidden = False
+        self.frameless = False
+
+    def center(self):
+        pass
+
+
+class _FakePage:
+    def __init__(self):
+        self.overlay = []
+        self.opened = []
+        self.controls = []
+        self.window = _FakeWindow()
+        self.web = False
+
+    def add(self, *controls):
+        self.controls.extend(controls)
+
+    def open(self, d):
+        self.opened.append(d)
+
+    def close(self, d):
+        pass
+
+    def update(self):
+        pass
+
+    def get_control(self, _id):
+        return None
+
+
+def _ui_for(store, mode="library"):
+    from unittest.mock import MagicMock
+
+    from app.ui import CenturioUI
+    page = _FakePage()
+    ui = CenturioUI(page, store, MagicMock(), mode=mode)
+    ui.mount()
+    return ui, page
+
+
+def _texts(control, depth=0, out=None):
+    """Every ft.Text value in a built subtree, for asserting on what is shown."""
+    import flet as ft
+    out = [] if out is None else out
+    if control is None or isinstance(control, str) or depth > 24:
+        return out
+    if isinstance(control, ft.Text):
+        if control.value:
+            out.append(control.value)
+        for span in getattr(control, "spans", None) or []:
+            if getattr(span, "text", None):
+                out.append(span.text)
+    for attr in ("controls", "actions"):
+        for child in getattr(control, attr, None) or []:
+            _texts(child, depth + 1, out)
+    _texts(getattr(control, "content", None), depth + 1, out)
+    return out
+
+
+def _find_all(control, pred, depth=0, out=None):
+    out = [] if out is None else out
+    if control is None or isinstance(control, str) or depth > 24:
+        return out
+    if pred(control):
+        out.append(control)
+    for attr in ("controls", "actions"):
+        for child in getattr(control, attr, None) or []:
+            _find_all(child, pred, depth + 1, out)
+    _find_all(getattr(control, "content", None), pred, depth + 1, out)
+    return out
+
+
+def test_no_modal_dialogs():
+    """The redesign's hard rule: nothing in the app opens an AlertDialog."""
+    for module in ("ui.py", "dialogs.py", "main.py", "toast.py"):
+        source = _read("app", module)
+        ok("AlertDialog(" not in source, f"app/{module} opens no modal dialog")
+        ok("SnackBar(" not in source, f"app/{module} doesn't fall back to a snack bar")
+
+    dialogs = _read("app", "dialogs.py")
+    for gone in ("open_app_dialog", "open_context_menu", "open_settings_dialog",
+                 "open_categories_dialog", "def confirm("):
+        ok(gone not in dialogs, f"the old {gone.strip('def (')} entry point is gone")
+
+
+def test_ui_builds_every_surface():
+    """Both modes, three screens, the popover and the first-run card."""
     try:
-        from unittest.mock import MagicMock
-        from app.ui import CenturioUI
-        from app import dialogs
+        from app.ui import CenturioUI  # noqa: F401
     except Exception as exc:
         skip("UI tests", exc)
         return
 
-    def _sample(store):
-        store.add_app({"name": "Notion", "sub": "Документы", "category_id": "work",
-                       "path": "/x/notion", "favorite": True})
-        store.add_app({"name": "VS Code", "sub": "Редактор", "category_id": "dev",
-                       "path": "/x/code", "quick": True})
-        a = store.add_app({"name": "Chrome", "sub": "Браузер", "category_id": "work",
-                           "path": "/x/chrome"})
-        store.mark_launched(a["id"])
-
-    class FakePage:
-        def __init__(self):
-            self.overlay = []
-            self.opened = []
-            self.controls = []
-
-        def open(self, d):
-            self.opened.append(d)
-
-        def close(self, d):
-            pass
-
-        def update(self):
-            pass
-
-    import shutil
-    import threading as _threading
-
-    from app import discovery as _discovery
-
-    # open_add_picker scans the machine on a worker thread, writing icons into
-    # the temp dir this test deletes on its way out. Stubbing the scan keeps
-    # the dialog test about the dialog, and keeps rmtree off a live scan.
-    scans = {"n": 0}
-    real_discover = _discovery.discover_apps
-
-    def fake_discover(icon_cache=None):
-        scans["n"] += 1
-        return []
-
-    _discovery.discover_apps = fake_discover
-    before_threads = set(_threading.enumerate())
-    d = tempfile.mkdtemp()
-    try:
+    with tempfile.TemporaryDirectory() as d:
         store = Store(os.path.join(d, "data.json"))
-        _sample(store)
-        page = FakePage()
-        ui = CenturioUI(page, store, MagicMock())
+        store.add_app({"name": "Notion", "path": "/x/notion.exe", "category_id": "work",
+                       "favorite": True})
+        store.add_app({"name": "VS Code", "path": "/x/code.exe", "category_id": "dev",
+                       "quick": True})
+        chrome = store.add_app({"name": "Chrome", "path": "/x/chrome.exe",
+                                "category_id": "work"})
+        store.mark_launched(chrome["id"])
+        poster = iconify.generate_icon(os.path.join(d, "poster.png"), 48)
+        game = store.add_app({"name": "Half-Life", "path": "steam://rungameid/70",
+                              "poster": str(poster), "category_id": "games"})
 
-        for filt in ["all", "favorites", "recent", "running", "category:work"]:
-            ui.filter = filt
-            ok(isinstance(ui._build_content(), list), f"content builds for {filt}")
-        ui.mode = "list"
-        ok(isinstance(ui._build_content(), list), "content builds in list mode")
-        ui.mode = "grid"
+        ui, page = _ui_for(store)
+        ok(page.controls, "mount puts a control tree on the page")
 
-        poster_png = iconify.generate_icon(os.path.join(d, "poster.png"), 48)
-        store.add_app({"name": "Half-Life", "path": "steam://rungameid/70",
-                       "poster": str(poster_png), "category_id": "games"})
-        ui.filter = "all"
-        ok(ui._use_poster(store.state()["apps"][-1]) is True, "game with poster uses poster tile")
-        ok(isinstance(ui._build_content(), list), "content builds with poster tiles")
-        ui.selected = -1
-        ui.move_selection(1)
-        ok(ui.selected == 0, "keyboard nav selects first app")
-        ui.move_selection(-5)
-        ok(ui.selected == 0, "keyboard nav clamps at start")
-        ui.activate_selected()
-        ok(True, "activate_selected launches without error")
-        ok(ui._build_rail() is not None, "rail builds")
-        ok(ui._build_sidebar() is not None, "sidebar builds")
-        ok(ui._build_toolbar() is not None, "toolbar builds")
-        ok(ui._build_statusbar() is not None, "statusbar builds")
+        for filt in ("all", "favorites", "running", "pinned"):
+            ui.view.filter = filt
+            ui.refresh()
+            ok(ui.body.content is not None, f"the library builds for the {filt} filter")
+        ui.view.filter = "category:work"
+        ui.refresh()
+        ok(ui.body.content is not None, "the library builds for a category filter")
 
-        dialogs.open_app_dialog(ui, None)
-        ok(len(page.opened) >= 1, "add-app dialog opens")
-        ok(_settle_threads(before_threads), "the add dialog's scan thread finishes")
-        ok(scans["n"] == 1, "opening the add dialog with nothing cached scans once")
-        # A rescan already paid for a scan; reopening the picker inside the TTL
-        # must reuse it instead of walking the registry and Steam again.
-        dialogs.open_app_dialog(ui, None)
-        ok(_settle_threads(before_threads), "the second open settles")
-        ok(scans["n"] == 1, "a cached scan result is reused instead of rescanning")
-        ok(ui.cached_discovery() is not None, "the scan result is cached on the UI")
-        ui._discovered_at -= ui.DISCOVERY_TTL + 1
-        ok(ui.cached_discovery() is None, "a stale scan result is not reused")
-        # Editing an entry to point at a different program used to keep the old
-        # program's icon until the next full rescan, because save()'s patch
-        # listed every field except icon/poster.
-        edit_id = store.state()["apps"][0]["id"]
-        store.update_app(edit_id, {"icon": "/old/previous-program.png"})
-        page.opened.clear()
-        dialogs.open_app_dialog(ui, store.get_app(edit_id))
-        ok(len(page.opened) >= 1, "edit-app dialog opens")
-        edit_dlg = page.opened[-1]
-        path_field = _find_control(
-            edit_dlg, lambda c: getattr(c, "hint_text", None) == "Путь к файлу приложения")
-        ok(path_field is not None, "the edit dialog exposes its path field")
-        path_field.value = "/x/newtarget.exe"
-        evt = MagicMock()
-        evt.control = path_field
-        path_field.on_change(evt)
-        edit_dlg.actions[0].controls[-1].on_click(None)
-        ok(_settle_threads(before_threads), "the post-save icon refresh finishes")
-        saved = store.get_app(edit_id)
-        ok(saved["path"] == "/x/newtarget.exe", "the retargeted path is saved")
-        ok(not saved.get("icon"),
-           "repointing an entry drops the previous program's icon")
+        ui.view.filter = "all"
+        ok(ui._use_poster(store.get_app(game["id"])) is True, "a game with a cover uses a poster")
+        store.set_setting("game_posters", False)
+        ui.refresh()
+        ok(ui._use_poster(store.get_app(game["id"])) is False, "turning posters off is obeyed")
+        store.set_setting("game_posters", True)
 
-        page.opened.clear()
-        dialogs.open_app_dialog(ui, store.get_app(edit_id))
-        edit_dlg = page.opened[-1]
-        edit_dlg.actions[0].controls[-1].on_click(None)
-        ok(_settle_threads(before_threads), "saving an unchanged entry settles")
-        store.update_app(edit_id, {"icon": "/kept/icon.png"})
-        page.opened.clear()
-        dialogs.open_app_dialog(ui, store.get_app(edit_id))
-        edit_dlg = page.opened[-1]
-        edit_dlg.actions[0].controls[-1].on_click(None)
-        ok(_settle_threads(before_threads), "the unchanged save settles")
-        ok(store.get_app(edit_id).get("icon") == "/kept/icon.png",
-           "saving without touching the path keeps the icon")
-        dialogs.open_categories_dialog(ui)
-        ok(True, "categories dialog opens")
-        target_cat_id = store.state()["categories"][0]["id"]
-        dialogs.open_categories_dialog(ui, target_cat_id)
-        ok(True, "categories dialog opens with a category focused, without crashing")
-        dialogs.open_categories_dialog(ui, "no-such-category-id")
-        ok(True, "focusing a since-deleted category doesn't crash the dialog")
-        dialogs._open_category_editor(ui, store.state()["categories"][0], lambda: None)
-        ok(True, "category editor (colour + icon pack) opens")
-        ok(ui._cat_glyph(store.state()["categories"][0]) is not None, "category glyph builds")
-        dialogs.open_settings_dialog(ui)
-        ok(True, "settings dialog opens")
-        ids = [a["id"] for a in store.state()["apps"]]
-        if len(ids) >= 2:
-            ui._reorder_app(store.state()["apps"], ids[1], ids[0])
-            ok(ui.sort == "manual", "reorder switches to manual sort")
-        ui._move_app_to_category(ids[0], store.state()["categories"][-1]["id"])
-        ok(True, "move-to-category runs")
-        dialogs.open_context_menu(ui, store.state()["apps"][0])
-        ok(True, "context menu opens")
+        for size in ("large", "compact"):
+            store.set_setting("tile_size", size)
+            ui.refresh()
+            ok(ui.body.content is not None, f"the grid builds with {size} tiles")
 
-        # Called with one argument too many, this used to bind the callback to
-        # `danger` and the label to `on_confirm` — and still "pass", because
-        # nothing ever pressed the button.
-        fired = []
-        dialogs.confirm(ui, "Удалить «X»?", "Удалить", lambda: fired.append(1))
-        confirm_dlg = page.opened[-1]
-        ok(not fired, "confirm doesn't run its callback just for opening")
-        confirm_dlg.actions[0].controls[-1].on_click(None)
-        ok(fired == [1], "the confirm button runs the callback it was given")
+        ui.view.set_mode("launch")
+        ui.refresh()
+        shown = _texts(ui.body.content)
+        ok("ЗАКРЕПЛЕНО" in shown, "«Запуск» shows the pinned row")
+        ok("ПОСЛЕДНЕЕ" in shown, "and what was launched recently")
+        ok("Chrome" in shown, "the recently launched app is in the list")
+
+        ui.view.set_query("cod")
+        ui.refresh()
+        shown = _texts(ui.body.content)
+        ok("ЗАКРЕПЛЕНО" not in shown, "a query hides the pinned row")
+        ok("Cod" in shown, "the matched substring is split out so it can be highlighted")
+        ui.view.set_query("нетакого")
+        ui.refresh()
+        ok(any("ничего нет" in t for t in _texts(ui.body.content)),
+           "an empty result explains itself")
+        ui.view.set_query("")
+
+        ui.view.set_mode("library")
+        ui.view.select_one(chrome["id"])
+        ui.refresh()
+        shown = _texts(ui.body.content)
+        ok("РАЗМЕЩЕНИЕ" in shown, "selecting a tile opens the inspector")
+        ok("Chrome" in shown, "on the app that was clicked")
+
+        ui.view.adv = True
+        ui.refresh()
+        ok("ПАРАМЕТРЫ ЗАПУСКА" in _texts(ui.body.content), "the launch options group expands")
+
+        cat_id = store.state()["categories"][0]["id"]
+        ui.view.open_popover(cat_id)
+        ui.refresh()
+        ok(ui.popover_layer.visible is True, "the category popover opens next to the rail")
+        ok("ЦВЕТ" in _texts(ui.popover_layer.content), "with the colour palette")
+        ok("Удалить категорию" in _texts(ui.popover_layer.content), "and the delete entry")
+        ui.view.close_popover()
+        ui.refresh()
+        ok(ui.popover_layer.visible is False, "and it closes again")
+
+        ui.view.set_screen("settings")
+        ui.refresh()
+        shown = _texts(ui.body.content)
+        for group in ("ВЫЗОВ", "СПИСОК ПРОГРАММ", "ВИД", "ДАННЫЕ"):
+            ok(group in shown, f"the settings screen has the {group} group")
+        ok("Спокойный вид" in shown, "including «Спокойный вид»")
+
+        ui.view.set_screen("add")
+        ui.refresh()
+        ok("Найти и добавить" in _texts(ui.body.content), "the add screen is a screen, not a dialog")
+
+        ui.view.set_screen("grid")
+        ui.view.onboarding = True
+        ui.refresh()
+        ok(ui.onboarding_layer.visible is True, "the first-run card can be shown")
+        ok(any("каждый день" in t for t in _texts(ui.onboarding_layer.content)),
+           "and it asks what is used daily")
+        ui.view.onboarding = False
 
         store.data["apps"] = []
-        ui.filter = "all"
-        ok(isinstance(ui._build_content(), list), "empty library builds")
+        ui.view.filter = "all"
+        ui.refresh()
+        ok(any("Здесь будет ваша библиотека" in t for t in _texts(ui.body.content)),
+           "an empty library says what to do next")
 
-        from app.ui import img_b64, app_hue
-        icon_png = iconify.generate_icon(os.path.join(d, "t.png"), 32)
-        ok(isinstance(img_b64(str(icon_png)), str), "img_b64 encodes a PNG")
-        ok(img_b64("/no/such.png") is None, "img_b64 missing -> None")
-        ok(img_b64("/x/foo.svg") is None, "img_b64 skips non-raster")
-        ok(0 <= app_hue({"name": "X"}) < 360, "app_hue falls back to name hue")
 
-        from app import colors as _C
-        page.opened.clear()
-        ui._toast("Готово")
-        ui._toast("Ошибка", error=True)
-        ok_icon = page.opened[-2].content.controls[0]
-        err_icon = page.opened[-1].content.controls[0]
-        ok(ok_icon.color == _C.GREEN, "a success toast uses the green icon")
-        ok(err_icon.color == _C.DANGER, "an error toast uses the red icon, not the same look as success")
-        ok(ok_icon.name != err_icon.name, "success and error toasts use different icons")
+def test_ui_calm_mode_hides_technical_text():
+    """«Спокойный вид» is one flag every technical caption has to obey."""
+    try:
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI calm-mode test", exc)
+        return
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        app = store.add_app({"name": "Notion", "path": r"C:\Program Files\Notion\Notion.exe",
+                             "category_id": "work", "quick": True})
+        store.mark_launched(app["id"])
+        ui, _ = _ui_for(store)
+        ui.view.select_one(app["id"])
+        ui.refresh()
+
+        loud = _texts(ui.body.content)
+        ok(any(r"C:\Program Files" in t for t in loud), "the inspector normally shows the path")
+        ok(any(t[:1].isdigit() and "приложени" in t for t in loud),
+           "and the grid shows a count")
+
+        store.set_setting("calm", True)
+        ui.refresh()
+        quiet = _texts(ui.body.content)
+        ok(not any(r"C:\Program Files" in t for t in quiet), "calm mode drops the path")
+        ok(not any(t[:1].isdigit() and "приложени" in t for t in quiet), "and the counters")
+        ok("Ctrl+K" not in quiet, "and the key chips")
+        ok("Notion" in quiet, "but never the name of the program")
+
+        ui.view.set_mode("launch")
+        ui.refresh()
+        ok("↑↓" not in _texts(ui.body.content), "and the hint bar in «Запуск»")
+        store.set_setting("calm", False)
+        store.set_setting("hints", True)
+        ui.refresh()
+        ok("↑↓" in _texts(ui.body.content), "which comes back when calm mode is off")
+        store.set_setting("hints", False)
+        ui.refresh()
+        ok("↑↓" not in _texts(ui.body.content), "«Подсказки клавиш» switches it off on its own")
+
+
+def test_ui_icons_are_never_letters():
+    """Rule from the handoff: an app tile shows the real icon or a neutral pad."""
+    try:
+        import flet as ft
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI icon test", exc)
+        return
+
+    from app import colors as _C
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        store.add_app({"name": "Notion", "path": "/x/notion.exe", "category_id": "work"})
+        ui, _ = _ui_for(store)
+        app = store.state()["apps"][0]
+
+        slot = ui.icon_slot(app, 60, 16)
+        ok(slot.bgcolor == _C.BG_SLOT, "an icon-less app gets the neutral pad")
+        ok(isinstance(slot.content, ft.Icon), "with a glyph, not a letter")
+        ok(slot.content.color == _C.GLYPH_PLACEHOLDER, "in the muted placeholder colour")
+        ok(slot.content.name == ft.Icons.WORK, "and the glyph is its category's")
+
+        icon_png = iconify.generate_icon(os.path.join(d, "real.png"), 32)
+        store.update_app(app["id"], {"icon": str(icon_png)})
+        ui.refresh()
+        slot = ui.icon_slot(store.get_app(app["id"]), 60, 16)
+        ok(isinstance(slot.content, ft.Image), "once an icon is extracted, that is what is shown")
+
+        # A letter tile is exactly what the redesign removed; the helpers that
+        # drew one are gone with it.
+        for helper in ("chip_colors", "cover_colors", "glyph_color"):
+            ok(not hasattr(_C, helper), f"the letter-tile helper {helper} is gone")
+        ok("initials(" not in _read("app", "ui.py").split("def cat_glyph")[0],
+           "nothing before cat_glyph reaches for initials")
+
+
+def test_ui_selection_and_bulk_actions():
+    try:
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI selection test", exc)
+        return
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        ids = [store.add_app({"name": n, "path": f"/x/{n}.exe", "category_id": "work"})["id"]
+               for n in ("A", "B", "C")]
+        ui, _ = _ui_for(store)
+
+        ui._select_tile(ids[0])
+        ok(ui.view.sel == [ids[0]] and ui.view.inspector == ids[0],
+           "a click selects one and opens the inspector")
+        ui._toggle_tile(ids[1])
+        ok(ui.view.sel == ids[:2], "the corner check builds a multi-selection")
+        ok(any("Выбрано 2" in t for t in _texts(ui.body.content)),
+           "and the bulk bar appears at two")
+
+        ui._bulk_favorite()
+        ok(sum(1 for a in store.state()["apps"] if a.get("favorite")) == 2,
+           "«В избранное» applies to the whole selection")
+
+        ui._select_tile(ids[0])
+        ui._toggle_tile(ids[1])
+        ui._bulk_make_set()
+        sets = store.state()["sets"]
+        ok(len(sets) == 1 and sorted(sets[0]["apps"]) == sorted(ids[:2]),
+           "«Собрать набор» makes a set out of the selection")
+        ok(ui.view.sel == [], "and clears the selection")
+
+        cat = store.state()["categories"][1]["id"]
+        ui._move_apps_to_category(ids[:2], cat)
+        ok(all(store.get_app(i)["category_id"] == cat for i in ids[:2]),
+           "dragging a selection onto a category moves all of it")
+        ok(ui.toast.action_btn.visible, "and the move is undoable")
+        ui.toast.fire_action()
+        ok(all(store.get_app(i)["category_id"] == "work" for i in ids[:2]),
+           "«Отменить» puts them back")
+
+        ui.view.select_all(ids)
+        ok(len(ui.view.sel) == 3, "Ctrl+A takes everything visible")
+        ui._select_group([ids[0]])
+        ok(len(ui.view.sel) == 3, "selecting a group doesn't drop what is already picked")
+
+
+def test_ui_delete_is_undone_not_confirmed():
+    """No confirmation dialog: removal happens and is reversible for 8 seconds."""
+    try:
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI delete test", exc)
+        return
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        ids = [store.add_app({"name": n, "path": f"/x/{n}", "category_id": "work"})["id"]
+               for n in ("Notion", "Figma")]
+        ui, page = _ui_for(store)
+
+        ui.view.select_one(ids[0])
+        ui._remove_selected()
+        ok(not page.opened, "nothing was opened to ask first")
+        ok(store.get_app(ids[0]) is None, "the app is gone straight away")
+        ok(ui.toast.control.visible, "a toast reports it")
+        ok(ui.toast.action_btn.visible and ui.toast.action_label.value == "Отменить",
+           "with an undo action")
+        ok(ui.toast.countdown.value == "8", "counting down from eight seconds")
+        ok("Notion" in ui.toast.text.value, "and it names what went")
+
+        ui.toast.fire_action()
+        ok(store.get_app(ids[0]) is not None, "«Отменить» brings it back")
+        ok(not ui.toast.control.visible, "and the toast goes away")
+
+        ui.view.select_all(ids)
+        ui._remove_selected()
+        ok(len(store.state()["apps"]) == 0, "a whole selection can go at once")
+        ok("Убрано 2" in ui.toast.text.value, f"reported as a count ({ui.toast.text.value})")
+        ui.toast.fire_action()
+        ok(len(store.state()["apps"]) == 2, "and comes back together")
+
+        # A category is the same deal: it goes, its apps are reassigned, undo
+        # puts both back.
+        cat = store.state()["categories"][1]
+        ui._move_apps_to_category(ids, cat["id"])
+        ui.toast.dismiss()
+        ui.remove_category(cat["id"])
+        ok(not any(c["id"] == cat["id"] for c in store.state()["categories"]),
+           "the category is deleted without a confirmation")
+        ok(ui.toast.action_btn.visible, "and offers an undo")
+        ui.toast.fire_action()
+        ok(any(c["id"] == cat["id"] for c in store.state()["categories"]),
+           "which restores the category")
+        ok(all(store.get_app(i)["category_id"] == cat["id"] for i in ids),
+           "and the apps that were in it")
+
+        while len(store.state()["categories"]) > 1:
+            store.remove_category(store.state()["categories"][-1]["id"])
+        ui.refresh()
+        ui.remove_category(store.state()["categories"][0]["id"])
+        ok(len(store.state()["categories"]) == 1,
+           "the last category can't be deleted — the apps would have nowhere to go")
+
+
+def test_toast_lifecycle():
+    """The toast replaces both the snack bar and the confirmation dialogs."""
+    try:
+        from app.toast import ToastHost
+    except Exception as exc:
+        skip("toast test", exc)
+        return
+
+    from app import colors as _C
+
+    host = ToastHost(_FakePage())
+    host.show("Готово")
+    ok(host.control.visible and host.text.value == "Готово", "a plain toast shows its text")
+    ok(not host.action_btn.visible, "with no action")
+    ok(host.icon.color == _C.OK, "and the success colour")
+
+    host.error("Файл не найден")
+    ok(host.icon.color == _C.ERR, "an error toast is red")
+    ok(host.card.bgcolor == _C.ERR_BG, "and looks different, not just differently worded")
+
+    fired = []
+    host.show("Убрано", action=lambda: fired.append(1), action_label="Отменить")
+    ok(host.countdown.value == "8", "an undoable toast counts down from eight")
+    host._tick(host._token)
+    ok(host.countdown.value == "7", "each tick takes a second off")
+    ok(not fired, "counting down doesn't fire the action")
+    host.fire_action()
+    ok(fired == [1], "clicking the action runs it once")
+    ok(not host.control.visible, "and dismisses the toast")
+    host.fire_action()
+    ok(fired == [1], "a second click can't run it again")
+
+    # A toast that was replaced while its timer was in flight must not clear
+    # the one that took its place.
+    host.show("Первый", action=lambda: None, action_label="Отменить")
+    stale = host._token
+    host.show("Второй")
+    host._tick(stale)
+    ok(host.text.value == "Второй" and host.control.visible,
+       "a stale timer doesn't touch the toast that replaced it")
+    host.stop()
+
+
+def test_ui_hotkey_capture():
+    try:
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI hotkey-capture test", exc)
+        return
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        one = store.add_app({"name": "A", "path": "/x/a", "category_id": "work"})["id"]
+        two = store.add_app({"name": "B", "path": "/x/b", "category_id": "work"})["id"]
+        ui, _ = _ui_for(store)
+        ui.view.select_one(one)
+
+        ui._begin_capture()
+        ok(ui.view.capture is True, "clicking the field starts listening")
+        ui.handle_key(types_ns(key="Control", ctrl=True, alt=False, shift=False, meta=False))
+        ok(ui.view.capture is True, "a lone modifier isn't a combination")
+        ui.handle_key(types_ns(key="G", ctrl=False, alt=False, shift=False, meta=False))
+        ok(store.get_app(one)["hotkey"] is None, "and neither is a bare letter")
+
+        ui.handle_key(types_ns(key="G", ctrl=True, alt=False, shift=True, meta=False))
+        ok(store.get_app(one)["hotkey"] == "Ctrl+Shift+G", "the combination is recorded")
+        ok(ui.view.capture is False, "and capture stops")
+
+        ui.view.select_one(two)
+        ui._begin_capture()
+        ui.handle_key(types_ns(key="G", ctrl=True, alt=False, shift=True, meta=False))
+        ok(store.get_app(two)["hotkey"] is None, "a combination already in use is refused")
+        ok("занята" in ui.toast.text.value, f"and says so ({ui.toast.text.value})")
+
+        ui.view.select_one(one)
+        ui._begin_capture()
+        ui.handle_key(types_ns(key="Escape", ctrl=False, alt=False, shift=False, meta=False))
+        ok(ui.view.capture is False, "Esc cancels the capture")
+        ok(store.get_app(one)["hotkey"] == "Ctrl+Shift+G", "leaving the old combination alone")
+
+        ui._set_hotkey(one, None)
+        ok(store.get_app(one)["hotkey"] is None, "and it can be cleared")
+
+
+def test_ui_keyboard_table():
+    """The key table from the handoff, end to end through handle_key."""
+    try:
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI keyboard test", exc)
+        return
+
+    def key(name, ctrl=False, shift=False):
+        return types_ns(key=name, ctrl=ctrl, alt=False, shift=shift, meta=False)
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        ids = []
+        for name in ("A", "B", "C"):
+            rec = store.add_app({"name": name, "path": f"/x/{name}", "category_id": "work"})
+            store.mark_launched(rec["id"])
+            ids.append(rec["id"])
+        ui, _ = _ui_for(store, mode="launch")
+
+        ui.handle_key(key("Arrow Down"))
+        ok(ui.view.hi == 1, "↓ moves the highlight")
+        ui.handle_key(key("Arrow Down"))
+        ui.handle_key(key("Arrow Down"))
+        ok(ui.view.hi == 2, "and stops at the end of the list")
+        ui.handle_key(key("Arrow Up"))
+        ok(ui.view.hi == 1, "↑ moves it back")
+
+        launched = []
+        ui._launch = lambda app_id: launched.append(app_id)
+        ui.handle_key(key("Enter"))
+        ok(len(launched) == 1, "↵ launches the highlighted row")
+
+        ui.view.set_query("zzz")
+        ui.handle_key(key("Escape"))
+        ok(ui.view.query == "", "Esc with a query clears it")
+
+        hidden = []
+        ui.controllers["hide_to_tray"] = lambda: hidden.append(1)
+        ui.handle_key(key("Escape"))
+        ok(hidden == [1], "Esc with nothing to clear hides the window")
+
+        ui.handle_key(key("l", ctrl=True))
+        ok(ui.view.mode == "library", "Ctrl+L opens the library")
+        ui.handle_key(key(",", ctrl=True))
+        ok(ui.view.screen == "settings", "Ctrl+, opens the settings screen")
+        ui.handle_key(key("Escape"))
+        ok(ui.view.screen == "grid", "Esc leaves it again")
+
+        ui.handle_key(key("a", ctrl=True))
+        ok(len(ui.view.sel) == 3, "Ctrl+A selects every visible tile")
+        ui.handle_key(key("Delete"))
+        ok(len(store.state()["apps"]) == 0, "Delete removes the selection")
+        ui.toast.fire_action()
+        ok(len(store.state()["apps"]) == 3, "and it is undoable")
+
+
+def test_ui_launch_flow_hides_the_window():
+    """The main scenario: hotkey, two letters, Enter, the window goes away."""
+    try:
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI launch-flow test", exc)
+        return
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        app_id = store.add_app({"name": "Notion", "path": "/x/notion.exe",
+                                "category_id": "work"})["id"]
+        ui, _ = _ui_for(store, mode="launch")
+
+        hidden = []
+        ui.controllers["hide_to_tray"] = lambda: hidden.append(1)
+        ui.launcher.launch.return_value = {"ok": True, "running": True}
+        ui.launcher.running_ids.return_value = [app_id]
+
+        ui.view.set_query("no")
+        ui.refresh()
+        ui.activate_selected()
+        ok(ui.launcher.launch.called, "Enter launched the match")
+        ok(store.get_app(app_id)["launch_count"] == 1, "the launch was recorded")
+        ok(hidden == [1], "and the window hid itself")
+        ok(ui.view.query == "", "with the query cleared for next time")
+
+        store.set_setting("hide_after", False)
+        hidden.clear()
+        ui.view.set_query("no")
+        ui.refresh()
+        ui.activate_selected()
+        ok(hidden == [], "with «Прятать окно после запуска» off, the window stays")
+
+        ui.launcher.launch.return_value = {"ok": False, "error": "Файл не найден: notion.exe"}
+        ui._launch(app_id)
+        ok(ui.toast.icon.color == __import__("app.colors", fromlist=["x"]).ERR,
+           "a failed launch is reported as an error")
+        ok(ui.toast.action_btn.visible and ui.toast.action_label.value == "Указать путь",
+           "and the message carries the action that fixes it")
+
+
+def test_ui_sets():
+    try:
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI sets test", exc)
+        return
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        ids = [store.add_app({"name": n, "path": f"/x/{n}", "category_id": "work"})["id"]
+               for n in ("A", "B")]
+        rec = store.add_set("Рабочее утро", ids)
+        ui, _ = _ui_for(store, mode="launch")
+
+        ok("НАБОРЫ" in _texts(ui.body.content), "«Запуск» offers the sets")
+        ok("Рабочее утро" in _texts(ui.body.content), "by name")
+
+        ui.launcher.launch.return_value = {"ok": True, "running": True}
+        ui.launcher.running_ids.return_value = ids
+        ui._launch_set(rec["id"])
+        ok(ui.launcher.launch.call_count == 2, "running a set starts everything in it")
+        ok(all(store.get_app(i)["launch_count"] == 1 for i in ids), "and records each one")
+
+        ui.launcher.launch.return_value = {"ok": False, "error": "нет"}
+        ui._launch_set(rec["id"])
+        ok(ui.toast.icon.color == __import__("app.colors", fromlist=["x"]).ERR,
+           "a set that starts nothing says so")
+
+
+def test_ui_add_screen():
+    """Scan results are grouped by source, with a suggested category per row."""
+    try:
+        from app import discovery
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI add-screen test", exc)
+        return
+
+    import threading as _threading
+
+    found = [
+        {"name": "Elden Ring", "path": "steam://rungameid/1", "source": "steam"},
+        {"name": "OBS Studio", "path": "C:/pf/obs64.exe", "source": "startmenu"},
+        {"name": "Notion", "path": "/x/notion.exe", "source": "startmenu"},
+    ]
+    real_discover = discovery.discover_apps
+    real_backfill = discovery.backfill_icons
+    before = set(_threading.enumerate())
+    try:
+        discovery.discover_apps = (
+            lambda icon_cache=None, on_progress=None, report=None: list(found))
+        # Resolving a steam:// icon reaches the CDN; this test is about the screen.
+        discovery.backfill_icons = lambda *a, **kw: False
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(os.path.join(d, "data.json"))
+            store.add_app({"name": "Notion", "path": "/x/notion.exe", "category_id": "work"})
+            ui, _ = _ui_for(store)
+
+            ui._open_add()
+            ok(_settle_threads(before), "the scan thread finishes")
+            ui.refresh()
+            ok(ui.view.screen == "add", "«Найти и добавить» is a screen inside the window")
+
+            groups = ui.found_groups()
+            ok([g["source"] for g in groups] == ["steam", "startmenu"],
+               "results are grouped by where they came from")
+            ok(all(r["is_new"] for g in groups for r in g["rows"]),
+               "«Только новые» is on by default, so nothing already added is listed")
+
+            ui.toggle_only_new()
+            names = [r["name"] for g in ui.found_groups() for r in g["rows"]]
+            ok("Notion" in names, "turning it off shows what is already in the library")
+
+            rows = {r["name"]: r for g in ui.found_groups() for r in g["rows"]}
+            ok(ui.add_category_for(rows["Elden Ring"]) == "games",
+               "a Steam game is proposed for «Игры»")
+            ui.cycle_add_category(rows["Elden Ring"])
+            ok(ui.add_category_for(rows["Elden Ring"]) != "games",
+               "and the proposal can be overridden in the row")
+
+            ui.toggle_add_row(rows["Notion"])
+            ok(not ui.view.add_sel, "an app already in the library can't be ticked")
+            ok("уже в библиотеке" in ui.toast.text.value, "clicking it explains why")
+
+            ui.toggle_add_row(rows["OBS Studio"])
+            ok(len(ui.view.add_sel) == 1, "a new one ticks")
+            group = next(g for g in ui.found_groups() if g["source"] == "startmenu")
+            ui.toggle_add_group(group)
+            ok(not ui.view.add_sel, "the group header unticks a group that is fully ticked")
+            ui.toggle_add_group(group)
+            ok({r["key"] for r in group["rows"] if r["is_new"]} <= ui.view.add_sel,
+               "and ticks every new row in it")
+
+            ui.view.reset_add()
+            ui.toggle_add_row(rows["Elden Ring"])
+            ui.commit_add()
+            ok(_settle_threads(before), "the post-add icon pass finishes")
+            names = [a["name"] for a in store.state()["apps"]]
+            ok("Elden Ring" in names, "committing adds the ticked programs")
+            ok(ui.view.screen == "grid", "and goes back to the grid")
+            ok(ui.toast.action_btn.visible, "the add is undoable")
+            ui.toast.fire_action()
+            ok("Elden Ring" not in [a["name"] for a in store.state()["apps"]],
+               "«Отменить» takes them out again")
+
+            ui.commit_add()
+            ok("Отметьте" in ui.toast.text.value, "committing nothing asks for a tick instead")
     finally:
-        _discovery.discover_apps = real_discover
-        _settle_threads(before_threads)
-        shutil.rmtree(d, ignore_errors=True)
+        discovery.discover_apps = real_discover
+        discovery.backfill_icons = real_backfill
+        _settle_threads(before)
+
+
+def test_ui_scan_states():
+    """Progress while scanning, and an error that carries its own way out."""
+    try:
+        from app import discovery
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI scan-state test", exc)
+        return
+
+    import threading as _threading
+
+    real_discover = discovery.discover_apps
+    before = set(_threading.enumerate())
+    gate = _threading.Event()
+    try:
+        def slow_discover(icon_cache=None, on_progress=None, report=None):
+            if on_progress:
+                on_progress("Steam", 1, 3)
+            gate.wait(3)
+            if report is not None:
+                report["errors"] = [{"source": "windows", "label": "Реестр",
+                                     "error": "не отдал список"}]
+            return []
+
+        discovery.discover_apps = slow_discover
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(os.path.join(d, "data.json"))
+            ui, _ = _ui_for(store)
+            ui._open_add()
+
+            deadline = time.time() + 3
+            while ui.scan_state()["state"] != "running" and time.time() < deadline:
+                time.sleep(0.01)
+            ui.refresh()
+            shown = _texts(ui.body.content)
+            ok("Смотрю, что установлено" in shown, "a scan in progress says what it is doing")
+            ok(any("Steam" in t for t in shown), "and names the source it is reading")
+            ok("Прервать" in shown, "and can be stopped")
+
+            gate.set()
+            ok(_settle_threads(before), "the scan finishes")
+            ui.refresh()
+            shown = _texts(ui.body.content)
+            ok(any("Реестр" in t for t in shown), "a source that failed is reported")
+            ok("Повторить" in shown, "with an action that retries")
+            ok(ui.scan_state()["errors"], "and the error is remembered until dismissed")
+            ui.dismiss_scan_errors()
+            ok(not ui.scan_state()["errors"], "«Скрыть» closes it")
+    finally:
+        gate.set()
+        discovery.discover_apps = real_discover
+        _settle_threads(before)
+
+
+def test_ui_settings_screen_writes_through():
+    try:
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI settings test", exc)
+        return
+
+    from app.hotkeys import LAUNCH_HOTKEYS, format_accel
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        ui, _ = _ui_for(store)
+        seen = []
+        ui.controllers["on_setting"] = lambda k, v: seen.append((k, v))
+
+        ui.view.set_screen("settings")
+        ui.refresh()
+
+        for key in ("hide_after", "autostart", "close_to_tray", "auto_rescan", "covers",
+                    "game_posters", "hints", "calm", "debug_log"):
+            before = bool(store.state()["settings"].get(key))
+            ui.set_setting(key, not before)
+            ok(store.state()["settings"][key] is (not before), f"«{key}» is written straight through")
+        ok(("autostart", True) in seen or ("autostart", False) in seen,
+           "the autostart toggle reaches the controller that talks to Windows")
+
+        ui.set_setting("accent", "#4f7dff")
+        ok(ui.accent() == "#4f7dff", "the accent is applied without a restart")
+        ui.set_setting("tile_size", "compact")
+        ok(store.state()["settings"]["tile_size"] == "compact", "so is the tile size")
+
+        start = store.state()["settings"]["launch_hotkey"]
+        ui.cycle_launch_hotkey()
+        ok(store.state()["settings"]["launch_hotkey"] != start,
+           "the launch combination can be changed")
+        ok(store.state()["settings"]["launch_hotkey"] in LAUNCH_HOTKEYS,
+           "and only ever becomes one that registers")
+        ok(format_accel("Ctrl+Space") == "Ctrl+Пробел", "and it is spelled in Russian")
+        ok(format_accel(None) == "не задана", "an unset combination says so")
+
+        ui.backup()
+        ok(any(p.name.startswith("centurio-backup-") for p in Path(d).glob("*.json")),
+           "«Сохранить» writes a backup next to the library")
 
 
 def test_ui_settings_cache():
-    """_draggable_tile/_accent used to re-copy the whole store per tile via
-    self.state(); refresh() now reads settings once and every tile consumer
-    reuses that cache. Assert the store read count stays flat as the library
-    grows, instead of scaling with the number of apps rendered.
-    """
+    """_tile/accent used to re-copy the whole store per tile via self.state();
+    refresh() reads settings once and every consumer reuses that cache."""
     try:
-        from unittest.mock import MagicMock
-        from app.ui import CenturioUI
+        from app.ui import CenturioUI  # noqa: F401
     except Exception as exc:
         skip("UI settings-cache test", exc)
         return
-
-    class FakePage:
-        def __init__(self):
-            self.overlay = []
-            self.controls = []
-
-        def open(self, d):
-            pass
-
-        def close(self, d):
-            pass
-
-        def update(self):
-            pass
 
     with tempfile.TemporaryDirectory() as d:
         store = Store(os.path.join(d, "data.json"))
         for i in range(5):
             store.add_app({"name": f"App{i}", "path": f"/x/{i}", "category_id": "work"})
 
-        ui = CenturioUI(FakePage(), store, MagicMock())
+        ui, _ = _ui_for(store)
 
         calls = {"n": 0}
         real_state = store.state
@@ -1409,38 +2145,21 @@ def test_ui_settings_cache():
 
         ok(many_apps_calls == few_apps_calls,
            "store.state() call count during refresh() doesn't grow with the number of apps")
-        ok(many_apps_calls == 1,
-           "refresh() takes exactly one snapshot of the store")
-        ok(ui._snapshot is None, "the snapshot is dropped when the refresh pass ends")
+        ok(many_apps_calls == 1, "refresh() takes exactly one snapshot of the store")
+        ok(ui._snapshot is None, "the snapshot is dropped when the pass ends")
 
         calls["n"] = 0
-        ui.view.set_query("app1")
-        ui.refresh(content_only=True)
+        ui.view.set_lib_query("app1")
+        ui.refresh()
         ok(calls["n"] == 1, "a keystroke in the search box costs one store read")
 
         # Outside a refresh pass nothing may serve stale data from the snapshot.
-        ui.view.set_query("")
+        ui.view.set_lib_query("")
         calls["n"] = 0
         before = len(ui.apps())
         store.add_app({"name": "Fresh", "path": "/x/fresh", "category_id": "work"})
         ok(len(ui.apps()) == before + 1, "reads outside a refresh go to the store")
         ok(calls["n"] >= 2, "those reads aren't served from a stale snapshot")
-
-
-class _FakePage:
-    def __init__(self):
-        self.overlay = []
-        self.opened = []
-        self.controls = []
-
-    def open(self, d):
-        self.opened.append(d)
-
-    def close(self, d):
-        pass
-
-    def update(self):
-        pass
 
 
 def test_ui_refresh_thread_safety():
@@ -1452,9 +2171,8 @@ def test_ui_refresh_thread_safety():
     """
     try:
         import threading
-        from unittest.mock import MagicMock
 
-        from app.ui import CenturioUI
+        from app.ui import CenturioUI  # noqa: F401
     except Exception as exc:
         skip("UI refresh thread-safety test", exc)
         return
@@ -1463,10 +2181,10 @@ def test_ui_refresh_thread_safety():
         store = Store(os.path.join(d, "data.json"))
         for i in range(8):
             store.add_app({"name": f"App{i}", "path": f"/x/{i}", "category_id": "work"})
-        ui = CenturioUI(_FakePage(), store, MagicMock())
+        ui, _ = _ui_for(store)
 
         seen_elsewhere = []
-        real_build = ui._build_content
+        real_build = ui._build_library
 
         def probing_build():
             box = []
@@ -1476,18 +2194,18 @@ def test_ui_refresh_thread_safety():
             seen_elsewhere.append(box[0])
             return real_build()
 
-        ui._build_content = probing_build
+        ui._build_library = probing_build
         try:
             ui.refresh()
         finally:
-            ui._build_content = real_build
+            ui._build_library = real_build
         ok(seen_elsewhere == [None],
            "a refresh's snapshot is invisible to every other thread")
         ok(ui._snapshot is None, "the snapshot is dropped when the pass ends")
 
         overlaps = []
         depth = {"n": 0}
-        real_build2 = ui._build_content
+        real_build2 = ui._build_library
 
         def counting_build():
             depth["n"] += 1
@@ -1498,7 +2216,7 @@ def test_ui_refresh_thread_safety():
             finally:
                 depth["n"] -= 1
 
-        ui._build_content = counting_build
+        ui._build_library = counting_build
         errors = []
 
         def hammer():
@@ -1516,34 +2234,28 @@ def test_ui_refresh_thread_safety():
             for t in threads:
                 t.join()
         finally:
-            ui._build_content = real_build2
+            ui._build_library = real_build2
         ok(not errors, f"concurrent refreshes raise nothing ({errors[:1]})")
         ok(not overlaps, "two refresh passes never build the control tree at once")
         ok(ui._snapshot is None, "no snapshot is left behind after the storm")
 
 
 def test_shutdown_releases_resources():
-    """Quitting used to rely entirely on daemon threads and os._exit.
-
-    Nothing called TrayController.stop() or Launcher.stop_monitor(), so the
-    tray icon and the psutil poll were left to be killed by process exit.
-    """
+    """Quitting used to rely entirely on daemon threads and os._exit."""
     try:
         from app import main as main_mod
     except Exception as exc:
         skip("shutdown test", exc)
         return
 
-    # Checked rather than imported directly: a missing name would otherwise
-    # come back as an ImportError and turn this into a skip, not a failure.
     ok(hasattr(main_mod, "shutdown"), "app.main exposes a shutdown routine")
     shutdown = main_mod.shutdown
 
-    # The flag alone isn't the fix — on_key has to consult it. That handler is
-    # a closure inside main(), so the wiring is asserted on the source.
+    # The key table lives in the UI now; app/main.py must hand every press to
+    # it rather than acting on some keys itself.
     page_module = _read("app", "main.py")
-    ok("if ui.dialog_open:" in page_module,
-       "the page's key handler stands down while a dialog is open")
+    ok("ui.handle_key(e)" in page_module,
+       "the page's key handler delegates to the UI's key table")
 
     calls = []
 
@@ -1557,15 +2269,13 @@ def test_shutdown_releases_resources():
             if self.boom:
                 raise RuntimeError(f"{self.label} is already gone")
 
-    store = types_ns(flush=Recorder("flush"))
-    tray = types_ns(stop=Recorder("tray"))
-    launcher = types_ns(stop_monitor=Recorder("monitor"))
-    hotkeys = types_ns(stop=Recorder("hotkeys"))
-    geometry = types_ns(cancel=Recorder("geometry"))
-
-    shutdown(store=store, tray=tray, launcher=launcher, hotkeys=hotkeys,
-             geometry_flush=geometry)
-    ok(set(calls) == {"flush", "geometry", "hotkeys", "monitor", "tray"},
+    shutdown(store=types_ns(flush=Recorder("flush")),
+             tray=types_ns(stop=Recorder("tray")),
+             launcher=types_ns(stop_monitor=Recorder("monitor")),
+             hotkeys=types_ns(stop=Recorder("hotkeys")),
+             geometry_flush=types_ns(cancel=Recorder("geometry")),
+             toast=types_ns(stop=Recorder("toast")))
+    ok(set(calls) == {"flush", "geometry", "hotkeys", "monitor", "tray", "toast"},
        f"every resource is released ({calls})")
     ok(calls[0] == "flush", "the store is flushed before anything is torn down")
 
@@ -1584,192 +2294,48 @@ def test_shutdown_releases_resources():
     ok(raised is None, "shutdown with nothing to release is a quiet no-op")
 
 
-def test_ui_dialog_suppresses_shortcuts():
-    """Key events keep arriving behind a modal dialog."""
+def test_tray_mini_launcher():
+    """The tray menu launches pinned programs without opening a window."""
     try:
-        from unittest.mock import MagicMock
-
         from app import dialogs
-        from app.ui import CenturioUI
+        from app.tray import TrayController
     except Exception as exc:
-        skip("UI dialog-shortcut test", exc)
+        skip("tray test", exc)
         return
 
     with tempfile.TemporaryDirectory() as d:
         store = Store(os.path.join(d, "data.json"))
-        store.add_app({"name": "App", "path": "/x/a", "category_id": "work"})
-        page = _FakePage()
-        ui = CenturioUI(page, store, MagicMock())
-        ok(ui.dialog_open is False, "no dialog is open to start with")
+        for i in range(7):
+            store.add_app({"name": f"App{i}", "path": f"/x/{i}", "category_id": "work",
+                           "quick": i < 6})
+        items = dialogs.tray_items(store)
+        ok(len(items) == 5, "the menu offers at most five pinned programs")
+        ok(all("Ctrl+" in i["label"] for i in items), "each one shows the key that runs it")
+        ok(dialogs.library_summary(store) == "7 приложений", "and the menu says how big the library is")
 
-        dialogs.open_context_menu(ui, store.state()["apps"][0])
-        ok(ui.dialog_open is True, "opening a dialog raises the flag")
-        opened = page.opened[-1]
-        ui.close_dialog(opened)
-        ok(ui.dialog_open is False, "closing it lowers the flag again")
+        opened = []
+        tray = TrayController("/no/such/icon.png",
+                              on_show=lambda: opened.append("launch"),
+                              on_open_library=lambda: opened.append("library"),
+                              menu_provider=lambda: ([("App0", lambda: opened.append("app"))],
+                                                     "7 приложений"))
+        ok(tray.start() is False, "a missing icon file doesn't crash the tray")
+        tray._show()
+        tray._open_library()
+        ok(opened == ["launch", "library"], "the menu entries reach their callbacks")
+        tray.refresh()
+        ok(True, "refreshing a tray that never started is a no-op")
 
-        # Dismissing without the buttons (Flet's own dismiss path) must also
-        # clear it, or the window's shortcuts stay dead for good.
-        dialogs.open_context_menu(ui, store.state()["apps"][0])
-        ok(ui.dialog_open is True, "second dialog opens")
-        page.opened[-1].on_dismiss(None)
-        ok(ui.dialog_open is False, "an on_dismiss also lowers the flag")
-
-        # Nested dialogs: the context menu opens a confirm on top of itself.
-        dialogs.open_context_menu(ui, store.state()["apps"][0])
-        menu = page.opened[-1]
-        dialogs.confirm(ui, "T", "OK", lambda: None)
-        ui.close_dialog(page.opened[-1])
-        ok(ui.dialog_open is True,
-           "closing the top dialog doesn't unlock the shortcuts under it")
-        ui.close_dialog(menu)
-        ok(ui.dialog_open is False, "closing the last one unlocks them")
-
-
-def test_ui_new_app_hue_varies():
-    """New tiles used to hash id(object()) — an address CPython reuses."""
-    try:
-        from unittest.mock import MagicMock
-
-        from app import dialogs
-        from app.ui import CenturioUI
-    except Exception as exc:
-        skip("UI hue test", exc)
-        return
-
-    # Tested at the source rather than through the dialog: building a dialog
-    # allocates enough to move the next address along, so the old scheme looked
-    # varied here while producing one single colour in a tight loop.
-    drawn = [dialogs.new_hue() for _ in range(48)]
-    ok(all(isinstance(h, int) and 0 <= h < 360 for h in drawn),
-       "every generated hue is an int in range")
-    ok(len(set(drawn)) > 20,
-       f"consecutive draws differ ({len(set(drawn))} distinct out of 48)")
-
-    with tempfile.TemporaryDirectory() as d:
-        store = Store(os.path.join(d, "data.json"))
-        page = _FakePage()
-        ui = CenturioUI(page, store, MagicMock())
-        dialogs._open_detail_dialog(ui, None)
-        slider = _find_control(page.opened[-1], lambda c: getattr(c, "max", None) == 359)
-        ok(slider is not None and 0 <= slider.value < 360,
-           "a draft dialog opens with a usable hue on its slider")
-
-
-def test_ui_context_menu_delete_visible():
-    """The delete entry used to live in the dialog's action bar.
-
-    That bar is a row, so the Divider next to it took the full width and
-    pushed the button past the dialog's edge — an empty strip under the menu
-    where the entry should be. It belongs in the menu column with the rest.
-    """
-    try:
-        import flet as ft
-        from unittest.mock import MagicMock
-
-        from app import dialogs
-        from app.ui import CenturioUI
-    except Exception as exc:
-        skip("UI context-menu delete test", exc)
-        return
-
-    with tempfile.TemporaryDirectory() as d:
-        store = Store(os.path.join(d, "data.json"))
-        app_id = store.add_app({"name": "App", "path": "/x/a", "category_id": "work"})["id"]
-        page = _FakePage()
-        ui = CenturioUI(page, store, MagicMock())
-
-        dialogs.open_context_menu(ui, store.get_app(app_id))
-        menu = page.opened[-1]
-
-        ok(not (menu.actions or []), "the menu keeps nothing in the action bar")
-
-        column = _find_control(menu.content, lambda c: isinstance(c, ft.Column))
-        ok(column is not None, "the menu body is a column of entries")
-        rows = list(column.controls or [])
-        ok(any(isinstance(c, ft.Divider) for c in rows),
-           "the separator sits inside the menu, above the delete entry")
-
-        def labels(control):
-            found = []
-
-            def walk(node, depth=0):
-                if depth > 12 or node is None or isinstance(node, str):
-                    return
-                if isinstance(node, ft.Text):
-                    found.append(node.value)
-                for attr in ("controls", "actions"):
-                    for child in getattr(node, attr, None) or []:
-                        walk(child, depth + 1)
-                walk(getattr(node, "content", None), depth + 1)
-            walk(control)
-            return found
-
-        delete_row = next((r for r in rows if "Удалить" in labels(r)), None)
-        ok(delete_row is not None, "the delete entry is one of the menu's rows")
-        ok(getattr(delete_row, "on_click", None) is not None, "the delete entry is clickable")
-        ok(getattr(delete_row, "on_hover", None) is not None,
-           "the delete entry highlights on hover like the others")
-
-        # And it still deletes: click through the menu row, then the confirm.
-        delete_row.on_click(None)
-        confirm_dlg = page.opened[-1]
-        ok(confirm_dlg is not menu, "clicking delete opens the confirmation")
-        confirm_dlg.actions[0].controls[-1].on_click(None)
-        ok(store.get_app(app_id) is None, "confirming removes the app")
-
-
-def test_ui_categories_dialog_reads():
-    """Rebuilding the category list used to deep-copy the library per row."""
-    try:
-        from unittest.mock import MagicMock
-
-        from app import dialogs
-        from app.ui import CenturioUI
-    except Exception as exc:
-        skip("UI categories-dialog test", exc)
-        return
-
-    def reads_with(n_categories):
-        with tempfile.TemporaryDirectory() as d:
-            store = Store(os.path.join(d, "data.json"))
-            for i in range(n_categories):
-                store.add_category(f"Cat{i}")
-            for i in range(10):
-                store.add_app({"name": f"App{i}", "path": f"/x/{i}", "category_id": "work"})
-            ui = CenturioUI(_FakePage(), store, MagicMock())
-            calls = {"n": 0}
-            real_state = store.state
-
-            def counting_state():
-                calls["n"] += 1
-                return real_state()
-
-            store.state = counting_state
-            try:
-                dialogs.open_categories_dialog(ui)
-            finally:
-                store.state = real_state
-            return calls["n"]
-
-    few, many = reads_with(1), reads_with(20)
-    ok(few > 0, "opening the categories dialog reads the store")
-    ok(few == many,
-       f"the read count doesn't grow with the category count ({few} vs {many})")
+        # A provider that blows up must not take the tray icon down with it.
+        tray.menu_provider = lambda: 1 / 0
+        ok(tray._provided() == ([], ""), "a failing menu provider degrades to an empty menu")
 
 
 def test_ui_background_rescan():
-    """The silent 15-minute tick must not do the expensive icon pass.
-
-    refresh=True re-resolves every icon, which on Windows is one PowerShell
-    process per .exe — fine for an explicit "Пересканировать", not for a
-    background timer.
-    """
+    """The silent 15-minute tick must not do the expensive icon pass."""
     try:
-        from unittest.mock import MagicMock
-
         from app import discovery
-        from app.ui import CenturioUI
+        from app.ui import CenturioUI  # noqa: F401
     except Exception as exc:
         skip("UI background-rescan test", exc)
         return
@@ -1777,7 +2343,7 @@ def test_ui_background_rescan():
     with tempfile.TemporaryDirectory() as d:
         store = Store(os.path.join(d, "data.json"))
         store.add_app({"name": "App", "path": "/x/app.exe", "category_id": "work"})
-        ui = CenturioUI(_FakePage(), store, MagicMock())
+        ui, _ = _ui_for(store)
 
         refreshes = []
         real_backfill = discovery.backfill_icons
@@ -1789,14 +2355,14 @@ def test_ui_background_rescan():
             return False
 
         discovery.backfill_icons = fake_backfill
-        discovery.discover_apps = lambda icon_cache=None: []
+        discovery.discover_apps = lambda icon_cache=None, on_progress=None, report=None: []
         try:
-            ui._rescan(silent=True)
+            ui.rescan(silent=True)
             ok(_settle_threads(before), "the silent rescan finishes")
             ok(refreshes == [False],
                "a silent rescan only fills gaps, it doesn't re-resolve every icon")
 
-            ui._rescan()
+            ui.rescan()
             ok(_settle_threads(before), "the explicit rescan finishes")
             ok(refreshes == [False, True],
                "an explicit rescan still forces the full icon refresh")
@@ -1806,8 +2372,147 @@ def test_ui_background_rescan():
             _settle_threads(before)
 
 
+def test_ui_discovery_reuse():
+    """Rescan, then open «Найти и добавить»: the machine is walked once."""
+    try:
+        from app import discovery
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI discovery-reuse test", exc)
+        return
+
+    scans = {"n": 0}
+    real_discover = discovery.discover_apps
+    before = set(__import__("threading").enumerate())
+    try:
+        def counting(icon_cache=None, on_progress=None, report=None):
+            scans["n"] += 1
+            return []
+
+        discovery.discover_apps = counting
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(os.path.join(d, "data.json"))
+            ui, _ = _ui_for(store)
+
+            ui.start_scan()
+            ok(_settle_threads(before), "the first scan finishes")
+            ok(scans["n"] == 1, "opening the add screen with nothing cached scans once")
+            ok(ui.cached_discovery() is not None, "the result is cached")
+
+            ui.start_scan()
+            ok(_settle_threads(before), "the second open settles")
+            ok(scans["n"] == 1, "a cached result is reused instead of rescanning")
+
+            ui._discovered_at -= 200
+            ok(ui.cached_discovery() is None, "a stale result is not reused")
+            ui.start_scan()
+            ok(_settle_threads(before), "the refreshed scan finishes")
+            ok(scans["n"] == 2, "so the next open scans again")
+    finally:
+        discovery.discover_apps = real_discover
+        _settle_threads(before)
+
+
+def test_ui_first_run():
+    try:
+        from app import discovery
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI first-run test", exc)
+        return
+
+    found = [{"name": "Chrome", "path": "C:/pf/chrome.exe", "source": "startmenu"},
+             {"name": "Telegram", "path": "C:/pf/telegram.exe", "source": "startmenu"}]
+    real_discover = discovery.discover_apps
+    real_suggest = discovery.suggest_first_run
+    before = set(__import__("threading").enumerate())
+    try:
+        discovery.discover_apps = (
+            lambda icon_cache=None, on_progress=None, report=None: list(found))
+        discovery.suggest_first_run = (
+            lambda items, limit=8: [{"app": i, "hint": "в автозагрузке"} for i in items])
+
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(os.path.join(d, "data.json"))
+            ui, _ = _ui_for(store)
+
+            ui.maybe_onboard()
+            ok(ui.view.onboarding is True, "an empty library is offered the first-run screen")
+            ok(_settle_threads(before), "its scan finishes")
+            ui.refresh()
+            ok(any("в автозагрузке" in t for t in _texts(ui.onboarding_layer.content)),
+               "each suggestion says why it was suggested")
+
+            ui.toggle_onboarding("c:/pf/chrome.exe")
+            ui.commit_onboarding_selection()
+            names = [a["name"] for a in store.state()["apps"]]
+            ok(names == ["Chrome"], "only the ticked programs are added")
+            ok(store.state()["apps"][0]["quick"] is True, "and they are pinned in «Запуск»")
+            ok(store.state()["settings"]["onboarded"] is True, "the screen doesn't come back")
+
+            ui.maybe_onboard()
+            ok(ui.view.onboarding is False, "not on the next start either")
+            ui.show_onboarding()
+            ok(ui.view.onboarding is True, "but «Показать первый запуск» brings it back")
+            ui.close_onboarding()
+            ok(ui.view.onboarding is False, "«Позже» closes it")
+    finally:
+        discovery.discover_apps = real_discover
+        discovery.suggest_first_run = real_suggest
+        _settle_threads(before)
+
+
+def test_discovery_sources_and_suggestions():
+    """Windows results carry where they came from; suggestions carry why."""
+    from app import discovery
+
+    ok("'startmenu'" in _read("app", "discovery.py"),
+       "the Start Menu pass tags what it finds")
+    ok("'registry'" in _read("app", "discovery.py"),
+       "and so do the uninstall and App Paths passes")
+
+    merged = discovery._dedupe([
+        {"name": "A", "path": "C:/a.exe", "source": "startmenu"},
+        {"name": "A", "path": "C:/a.exe", "source": "registry", "icon": "/i.png"},
+    ])
+    ok(len(merged) == 1, "the same program from two sources is one entry")
+    ok(merged[0]["source"] == "startmenu", "the first source it was seen in wins")
+    ok(merged[0]["icon"] == "/i.png", "and an icon from the second is still adopted")
+
+    steps = []
+    report = {}
+    discovery.discover_apps(None, on_progress=lambda *a: steps.append(a), report=report)
+    ok(steps and steps[-1][1] == steps[-1][2],
+       "progress is reported and ends at the last source")
+    ok("errors" in report, "the report says which sources failed")
+
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "Desktop"))
+        with open(os.path.join(d, "Desktop", "Visual Studio Code.lnk"), "w") as fh:
+            fh.write("x")
+        old = os.environ.get("USERPROFILE")
+        os.environ["USERPROFILE"] = d
+        try:
+            names = discovery.desktop_names()
+            ok("visualstudiocode" in names, "a desktop shortcut is recognised by name")
+            items = [{"name": "Visual Studio Code", "path": "C:/x.exe", "source": "registry"},
+                     {"name": "Nothing", "path": "C:/y.exe", "source": "startmenu"}]
+            picked = discovery.suggest_first_run(items)
+            ok(picked and picked[0]["app"]["name"] == "Visual Studio Code",
+               "and it is offered first on the first-run screen")
+            ok(picked[0]["hint"] == "на рабочем столе", "with the reason it was picked")
+            ok(picked[1]["hint"] == "в меню «Пуск»",
+               "the rest are honestly labelled, not guessed at")
+        finally:
+            if old is None:
+                os.environ.pop("USERPROFILE", None)
+            else:
+                os.environ["USERPROFILE"] = old
+
+
 if __name__ == "__main__":
     test_store()
+    test_store_sets_and_undo()
     test_store_concurrency()
     test_store_load_validation()
     test_store_write_failure()
@@ -1836,15 +2541,29 @@ if __name__ == "__main__":
     test_data_ops()
     test_log()
     test_queries()
-    test_ui_build()
+    test_view_state()
+    test_discovery_sources_and_suggestions()
+    test_no_modal_dialogs()
+    test_ui_builds_every_surface()
+    test_ui_calm_mode_hides_technical_text()
+    test_ui_icons_are_never_letters()
+    test_ui_selection_and_bulk_actions()
+    test_ui_delete_is_undone_not_confirmed()
+    test_toast_lifecycle()
+    test_ui_hotkey_capture()
+    test_ui_keyboard_table()
+    test_ui_launch_flow_hides_the_window()
+    test_ui_sets()
+    test_ui_add_screen()
+    test_ui_scan_states()
+    test_ui_settings_screen_writes_through()
     test_ui_settings_cache()
     test_ui_refresh_thread_safety()
-    test_ui_categories_dialog_reads()
     test_ui_background_rescan()
+    test_ui_discovery_reuse()
+    test_ui_first_run()
+    test_tray_mini_launcher()
     test_shutdown_releases_resources()
-    test_ui_dialog_suppresses_shortcuts()
-    test_ui_new_app_hue_varies()
-    test_ui_context_menu_delete_visible()
     code, line = _summarize(_passed, _failed, _skipped, bool(os.environ.get("CI")))
     print(f"\n{line}")
     sys.exit(code)
