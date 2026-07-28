@@ -1,0 +1,854 @@
+diff --git a/app/dialogs.py b/app/dialogs.py
+index 2efd334..004281c 100644
+--- a/app/dialogs.py
++++ b/app/dialogs.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import random
+ import shlex
+ import threading
+ from collections import Counter
+@@ -8,7 +9,17 @@ import flet as ft
+ 
+ from . import colors as C
+ from .format import ICON_PACK, T, cat_icon, initials
+-from .store import hue_from_string
++
++
++def new_hue() -> int:
++    """A fresh tile colour for a brand-new entry.
++
++    Random on purpose, not derived from an object's address. This used to be
++    hue_from_string(str(id(object()))) — an object that died on the same line,
++    so CPython handed the freed address straight back and every new app in a
++    row came out the identical colour.
++    """
++    return random.randrange(360)
+ 
+ 
+ def _field_label(text):
+@@ -42,10 +53,9 @@ def _primary_btn(label, on_click):
+ 
+ 
+ def confirm(app_ui, title, confirm_label, on_confirm, danger=True):
+-    page = app_ui.page
+ 
+     def do():
+-        page.close(dialog)
++        app_ui.close_dialog(dialog)
+         on_confirm()
+ 
+     confirm_btn = ft.Container(
+@@ -57,10 +67,10 @@ def confirm(app_ui, title, confirm_label, on_confirm, danger=True):
+         modal=True, bgcolor=C.PANEL,
+         title=T(title, size=17, weight=ft.FontWeight.BOLD, color=C.TEXT),
+         actions=[ft.Row([ft.Container(expand=True),
+-                         _outline_btn("Отмена", None, lambda: page.close(dialog)),
++                         _outline_btn("Отмена", None, lambda: app_ui.close_dialog(dialog)),
+                          confirm_btn])],
+         shape=ft.RoundedRectangleBorder(radius=16))
+-    page.open(dialog)
++    app_ui.open_dialog(dialog)
+ 
+ 
+ def _menu_item(icon, label, on_click, danger=False):
+@@ -75,14 +85,13 @@ def _menu_item(icon, label, on_click, danger=False):
+ 
+ 
+ def open_context_menu(app_ui, app):
+-    page = app_ui.page
+     store = app_ui.store
+     fav = app.get("favorite")
+     quick = app.get("quick")
+ 
+     def close_then(fn):
+         def h():
+-            page.close(dialog)
++            app_ui.close_dialog(dialog)
+             fn()
+         return h
+ 
+@@ -123,7 +132,7 @@ def open_context_menu(app_ui, app):
+         actions=[ft.Divider(height=1, color=C.LINE_2), delete_btn],
+         actions_padding=ft.padding.only(12, 0, 12, 8),
+         shape=ft.RoundedRectangleBorder(radius=16))
+-    page.open(dialog)
++    app_ui.open_dialog(dialog)
+ 
+ 
+ def _remove(app_ui, app_id):
+@@ -339,10 +348,10 @@ def open_add_picker(app_ui):
+         content=body,
+         actions=[ft.Row([_outline_btn("Указать файл вручную", ft.Icons.FOLDER_OPEN, browse),
+                          ft.Container(expand=True),
+-                         _outline_btn("Готово", None, lambda: page.close(dialog)),
++                         _outline_btn("Готово", None, lambda: app_ui.close_dialog(dialog)),
+                          add_btn])],
+         shape=ft.RoundedRectangleBorder(radius=16))
+-    page.open(dialog)
++    app_ui.open_dialog(dialog)
+     # A rescan already walked the Start Menu, the registry and every Steam
+     # library a moment ago and told the user how many new programs it saw.
+     # Scanning again just to show them would repeat all of that work.
+@@ -362,8 +371,10 @@ def _open_detail_dialog(app_ui, existing):
+     draft = dict(existing) if existing else {
+         "name": "", "path": "", "sub": "",
+         "category_id": cats[0]["id"] if cats else "work",
+-        "hue": hue_from_string(str(id(object()))), "favorite": False, "quick": False,
++        "hue": new_hue(), "favorite": False, "quick": False,
+     }
++    # Only reachable for an edit: a stored record could in principle carry a
++    # non-numeric hue. New drafts above are always given one.
+     if not isinstance(draft.get("hue"), int):
+         draft["hue"] = 210
+ 
+@@ -524,7 +535,7 @@ def _open_detail_dialog(app_ui, existing):
+         else:
+             repoint = False
+             store.add_app(draft)
+-        page.close(dialog)
++        app_ui.close_dialog(dialog)
+         app_ui._on_library_changed()
+         app_ui._toast("Сохранено" if is_edit else "Приложение добавлено")
+         if repoint or not is_edit:
+@@ -533,7 +544,7 @@ def _open_detail_dialog(app_ui, existing):
+     def remove():
+         def do():
+             store.remove_app(existing["id"])
+-            page.close(dialog)
++            app_ui.close_dialog(dialog)
+             app_ui._on_library_changed()
+             app_ui._toast("Удалено")
+         confirm(app_ui, f"Удалить «{existing['name']}»?", "Удалить", do)
+@@ -569,7 +580,7 @@ def _open_detail_dialog(app_ui, existing):
+             border=ft.border.all(1, "#5a2a2a"), border_radius=9,
+             on_click=lambda e: remove(), alignment=ft.alignment.center))
+     actions += [ft.Container(expand=True),
+-                _outline_btn("Отмена", None, lambda: page.close(dialog)),
++                _outline_btn("Отмена", None, lambda: app_ui.close_dialog(dialog)),
+                 _primary_btn("Сохранить" if is_edit else "Добавить", save)]
+ 
+     dialog = ft.AlertDialog(
+@@ -580,7 +591,7 @@ def _open_detail_dialog(app_ui, existing):
+         actions=[ft.Row(actions, spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)],
+         shape=ft.RoundedRectangleBorder(radius=16),
+     )
+-    page.open(dialog)
++    app_ui.open_dialog(dialog)
+ 
+ 
+ def _mini_btn(icon, on_click, color=None, disabled=False):
+@@ -671,10 +682,10 @@ def open_categories_dialog(app_ui, focus_id=None):
+         modal=True, bgcolor=C.PANEL,
+         title=T("Категории", size=18, weight=ft.FontWeight.BOLD, color=C.TEXT),
+         content=body,
+-        actions=[ft.Row([ft.Container(expand=True), _primary_btn("Готово", lambda: page.close(dialog))])],
++        actions=[ft.Row([ft.Container(expand=True), _primary_btn("Готово", lambda: app_ui.close_dialog(dialog))])],
+         shape=ft.RoundedRectangleBorder(radius=16),
+     )
+-    page.open(dialog)
++    app_ui.open_dialog(dialog)
+     if focus_id:
+         try:
+             body.scroll_to(key=focus_id, duration=300)
+@@ -706,7 +717,6 @@ def _inline_name_field(app_ui, cat, rebuild):
+ 
+ 
+ def _open_category_editor(app_ui, cat, on_done):
+-    page = app_ui.page
+     store = app_ui.store
+     draft = {"name": cat["name"], "color": C.category_color(cat), "icon": cat.get("icon")}
+ 
+@@ -801,7 +811,7 @@ def _open_category_editor(app_ui, cat, on_done):
+     def save():
+         store.update_category(cat["id"], {"name": draft["name"].strip() or "Категория",
+                                           "color": draft["color"], "icon": draft["icon"]})
+-        page.close(dlg)
++        app_ui.close_dialog(dlg)
+         on_done()
+         app_ui._on_library_changed()
+ 
+@@ -823,14 +833,13 @@ def _open_category_editor(app_ui, cat, on_done):
+         title=T("Категория", size=18, weight=ft.FontWeight.BOLD, color=C.TEXT),
+         content=body,
+         actions=[ft.Row([ft.Container(expand=True),
+-                         _outline_btn("Отмена", None, lambda: page.close(dlg)),
++                         _outline_btn("Отмена", None, lambda: app_ui.close_dialog(dlg)),
+                          _primary_btn("Сохранить", save)])],
+         shape=ft.RoundedRectangleBorder(radius=16))
+-    page.open(dlg)
++    app_ui.open_dialog(dlg)
+ 
+ 
+ def open_settings_dialog(app_ui):
+-    page = app_ui.page
+     store = app_ui.store
+     s = store.state()["settings"]
+     accents = ["#f5f5f7", "#4f7dff", "#3ecfaf", "#f0a020"]
+@@ -895,14 +904,14 @@ def open_settings_dialog(app_ui):
+                spacing=8, wrap=True, run_spacing=8),
+         ft.Container(height=12),
+         _outline_btn("Управление категориями", ft.Icons.FOLDER,
+-                     lambda: (page.close(dialog), open_categories_dialog(app_ui))),
++                     lambda: (app_ui.close_dialog(dialog), open_categories_dialog(app_ui))),
+     ], spacing=6, tight=True, scroll=ft.ScrollMode.AUTO, width=460)
+ 
+     dialog = ft.AlertDialog(
+         modal=True, bgcolor=C.PANEL,
+         title=T("Настройки", size=18, weight=ft.FontWeight.BOLD, color=C.TEXT),
+         content=body,
+-        actions=[ft.Row([ft.Container(expand=True), _primary_btn("Готово", lambda: page.close(dialog))])],
++        actions=[ft.Row([ft.Container(expand=True), _primary_btn("Готово", lambda: app_ui.close_dialog(dialog))])],
+         shape=ft.RoundedRectangleBorder(radius=16),
+     )
+-    page.open(dialog)
++    app_ui.open_dialog(dialog)
+diff --git a/app/discovery.py b/app/discovery.py
+index 14051ee..de16c29 100644
+--- a/app/discovery.py
++++ b/app/discovery.py
+@@ -381,9 +381,9 @@ def _http_get(url: str, timeout: int = _CDN_TIMEOUT) -> bytes | None:
+     req = urllib.request.Request(url, headers={"User-Agent": "Centurio"})
+     try:
+         with urllib.request.urlopen(req, timeout=timeout) as resp:
+-            if getattr(resp, "status", 200) != 200:
+-                _cdn_record(True)
+-                return None
++            # No status check: urlopen raises HTTPError for everything that
++            # isn't 2xx, and a 2xx without a body (204) falls out of the
++            # caller's own "at least 1 KB of image" test anyway.
+             data = resp.read(_CDN_MAX_BYTES + 1)
+     except urllib.error.HTTPError:
+         # The server answered (404 for missing art) — the network itself is fine.
+diff --git a/app/format.py b/app/format.py
+index b0fd819..db8ba4f 100644
+--- a/app/format.py
++++ b/app/format.py
+@@ -9,9 +9,6 @@ import time
+ 
+ import flet as ft
+ 
+-CATEGORY_ICON_CHOICES = ["work", "brush", "sports_esports", "code", "folder",
+-                         "movie", "music_note", "chat", "terminal", "rocket_launch"]
+-
+ ICON_PACK = [
+     "work", "business", "apartment", "store", "home", "folder", "folder_special",
+     "code", "terminal", "data_object", "bug_report", "build", "engineering", "memory",
+diff --git a/app/hotkeys.py b/app/hotkeys.py
+index 4e96eed..6f5d17e 100644
+--- a/app/hotkeys.py
++++ b/app/hotkeys.py
+@@ -112,10 +112,13 @@ class HotkeyManager:
+         return self.available and (accel or "").strip().lower() in self.bound
+ 
+     def _fire(self, app_id):
++        # Runs on pynput's listener thread, where an escaping exception kills
++        # the listener and takes every other hotkey with it — so it is caught,
++        # but not swallowed silently.
+         try:
+             self.on_trigger(app_id)
+         except Exception:
+-            pass
++            log.exception("global hotkey handler for %s failed", app_id)
+ 
+     def stop(self):
+         if self._listener:
+diff --git a/app/images.py b/app/images.py
+index d46c226..55ba0b9 100644
+--- a/app/images.py
++++ b/app/images.py
+@@ -10,7 +10,7 @@ import flet as ft
+ from .store import hue_from_string
+ 
+ _RASTER_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+-_MIN_ART_PX = 160
++MIN_ART_PX = 160
+ _MISS = object()
+ 
+ 
+@@ -116,12 +116,12 @@ def icon_image(path, **kw) -> "ft.Image | None":
+     return None
+ 
+ 
+-def _is_launcher_art(a) -> bool:
++def is_launcher_art(a) -> bool:
+     path = a.get("path") or ""
+     return path.startswith("steam://") or path.startswith("com.epicgames.launcher://")
+ 
+ 
+-def _img_size(path) -> tuple[int, int] | None:
++def img_size(path) -> tuple[int, int] | None:
+     if not path or not str(path).lower().endswith(_RASTER_EXT):
+         return None
+     key = str(path)
+diff --git a/app/launcher.py b/app/launcher.py
+index d3dd6dc..4348024 100644
+--- a/app/launcher.py
++++ b/app/launcher.py
+@@ -141,7 +141,11 @@ class Launcher:
+     def _run_as_admin(self, path: str, args: list[str], cwd: str) -> dict:
+         try:
+             import ctypes
+-            params = " ".join(f'"{a}"' if " " in a else a for a in args)
++            # list2cmdline is the quoting subprocess itself uses for Windows.
++            # Wrapping only args that contain a space produced a broken command
++            # line for anything carrying a quote or a trailing backslash — and
++            # this one is handed to ShellExecuteW with an elevation prompt.
++            params = subprocess.list2cmdline(args)
+             rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", path, params or None, cwd, 1)
+             if int(rc) <= 32:
+                 return {"ok": False, "error": f"Не удалось запустить от администратора (код {rc})"}
+diff --git a/app/main.py b/app/main.py
+index ecbda90..d70e4d3 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ import os
+ import sys
+ import threading
++import time
+ from pathlib import Path
+ 
+ import flet as ft
+@@ -18,6 +19,37 @@ from app.ui import CenturioUI
+ 
+ ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+ 
++# Window moves and resizes arrive in bursts; this is how long the last one
++# waits before the geometry is written out.
++GEOMETRY_FLUSH_DELAY = 0.5
++
++# How often the "Автообновление списка" setting is acted on, when it is on.
++AUTO_RESCAN_INTERVAL = 900
++
++
++def shutdown(store=None, tray=None, launcher=None, hotkeys=None, geometry_flush=None):
++    """Release what the app grabbed, in an order that can't lose data.
++
++    The store is flushed first, then the background machinery is told to stop.
++    Everything is optional and every step is independently guarded: quitting
++    must not be blocked by a tray icon that has already died, and until this
++    existed nothing ever called TrayController.stop() or stop_monitor() at all
++    — shutdown relied entirely on daemon threads and os._exit.
++    """
++    for label, step in (("flushing the store", getattr(store, "flush", None)),
++                        ("cancelling the geometry flush",
++                         getattr(geometry_flush, "cancel", None)),
++                        ("stopping the hotkey listener", getattr(hotkeys, "stop", None)),
++                        ("stopping the process monitor",
++                         getattr(launcher, "stop_monitor", None)),
++                        ("stopping the tray icon", getattr(tray, "stop", None))):
++        if step is None:
++            continue
++        try:
++            step()
++        except Exception:
++            log.exception("%s on quit failed", label)
++
+ 
+ def main(page: ft.Page):
+     store = Store()
+@@ -59,12 +91,14 @@ def main(page: ft.Page):
+         page.window.prevent_close = True
+ 
+     launcher = Launcher()
++    # Bound further down, but named here so quit_app can close over them and
++    # still be safe if the tray's "Выход" somehow fires before they exist.
++    hotkeys = None
++    geometry_flush = None
+ 
+     def quit_app():
+-        try:
+-            store.flush()
+-        except Exception:
+-            log.exception("flushing store on quit failed")
++        shutdown(store=store, tray=tray, launcher=launcher,
++                 hotkeys=hotkeys, geometry_flush=geometry_flush)
+         _quit(page)
+ 
+     tray = TrayController(icon_path, on_show=lambda: _show_window(page), on_quit=quit_app)
+@@ -117,6 +151,11 @@ def main(page: ft.Page):
+     launcher.on_change = lambda ids: ui.set_running(ids)
+ 
+     def on_key(e: ft.KeyboardEvent):
++        # The page keeps receiving key events while a modal dialog is up, and
++        # the window behind it acted on every one: arrows moved a selection
++        # nobody could see, Enter launched whatever they landed on.
++        if ui.dialog_open:
++            return
+         key = e.key
+         if e.ctrl and key.lower() == "k":
+             ui.search_field.focus()
+@@ -147,16 +186,13 @@ def main(page: ft.Page):
+             ui.activate_selected()
+     page.on_keyboard_event = on_key
+ 
+-
+-    _GEOMETRY_FLUSH_DELAY = 0.5
+-
+     def _flush_geometry():
+         try:
+             store.flush()
+         except Exception:
+             log.exception("flushing window geometry failed")
+ 
+-    geometry_flush = Debounce(_GEOMETRY_FLUSH_DELAY, _flush_geometry)
++    geometry_flush = Debounce(GEOMETRY_FLUSH_DELAY, _flush_geometry)
+ 
+     def save_window(flush: bool = False):
+         try:
+@@ -201,9 +237,8 @@ def main(page: ft.Page):
+     launcher.start_monitor()
+ 
+     def _auto_rescan_loop():
+-        import time as _t
+         while True:
+-            _t.sleep(900)  
++            time.sleep(AUTO_RESCAN_INTERVAL)
+             try:
+                 if store.state()["settings"].get("auto_rescan"):
+                     ui._rescan(silent=True)
+@@ -231,18 +266,21 @@ def app_paths_dir(store):
+ 
+ 
+ def _show_window(page):
++    # Both halves are guarded separately and neither is fatal: restoring a
++    # window can fail on a disconnected session or a torn-down page, and the
++    # tray click that asked for it must not die with a traceback.
+     try:
+         page.window.visible = True
+         page.window.minimized = False
+         page.update()
+     except Exception:
+-        pass
++        log.exception("restoring the window failed")
+     try:
+         page.window.to_front()
+         page.window.focused = True
+         page.update()
+     except Exception:
+-        pass
++        log.exception("bringing the window to the front failed")
+ 
+ 
+ def _hide_window(page):
+@@ -250,7 +288,7 @@ def _hide_window(page):
+         page.window.visible = False
+         page.update()
+     except Exception:
+-        pass
++        log.exception("hiding the window failed")
+ 
+ 
+ def _quit(page):
+@@ -258,6 +296,7 @@ def _quit(page):
+         page.window.prevent_close = False
+         page.window.destroy()
+     except Exception:
++        log.exception("closing the window failed, exiting the hard way")
+         os._exit(0)
+ 
+ # The launcher lives in the repository-root main.py — this module only builds
+diff --git a/app/queries.py b/app/queries.py
+index f9c94b6..e5286c2 100644
+--- a/app/queries.py
++++ b/app/queries.py
+@@ -4,6 +4,8 @@ SORT_KEYS = ("alpha", "recent", "added", "manual")
+ 
+ 
+ def valid_filter(f: str, categories: list[dict]) -> str:
++    """Note on naming: the view selector is called `view` in the signatures
++    below, never `filter` — that name shadows the builtin."""
+     if f and f.startswith("category:"):
+         cid = f.split(":", 1)[1]
+         if not any(c["id"] == cid for c in categories):
+@@ -40,26 +42,26 @@ def quick_apps(apps: list[dict]) -> list[dict]:
+     return [a for a in apps if a.get("quick")]
+ 
+ 
+-def build_sections(apps: list[dict], categories: list[dict], filter: str,
+-                    query: str, sort: str, running: set) -> list[dict]:
++def build_sections(apps: list[dict], categories: list[dict], view: str,
++                   query: str, sort: str, running: set) -> list[dict]:
+     visible = [a for a in apps if matches(a, query)]
+     q = (query or "").strip()
+     if q:
+         return [{"name": "Результаты поиска", "apps": sort_apps(visible, sort),
+                  "editable": False, "cid": None}]
+-    if filter == "favorites":
++    if view == "favorites":
+         return [{"name": "Избранное",
+                  "apps": sort_apps([a for a in visible if a.get("favorite")], sort),
+                  "editable": False, "cid": None}]
+-    if filter == "recent":
++    if view == "recent":
+         return [{"name": "Недавние", "apps": recent_apps(visible),
+                  "editable": False, "cid": None}]
+-    if filter == "running":
++    if view == "running":
+         return [{"name": "Запущено",
+                  "apps": sort_apps([a for a in visible if a["id"] in running], sort),
+                  "editable": False, "cid": None}]
+-    if filter.startswith("category:"):
+-        cid = filter.split(":", 1)[1]
++    if view.startswith("category:"):
++        cid = view.split(":", 1)[1]
+         cat = next((c for c in categories if c["id"] == cid), None)
+         return [{"name": cat["name"] if cat else "Категория",
+                  "apps": sort_apps([a for a in visible if a.get("category_id") == cid], sort),
+@@ -80,9 +82,9 @@ def flatten_sections(sections: list[dict]) -> list[dict]:
+     return [a for sec in sections for a in sec["apps"]]
+ 
+ 
+-def current_title(filter: str, query: str, categories: list[dict]) -> str:
++def current_title(view: str, query: str, categories: list[dict]) -> str:
+     if query:
+         return "Поиск"
+     return {"all": "Все приложения", "favorites": "Избранное", "recent": "Недавние",
+-            "running": "Запущено"}.get(filter) or (
+-        next((c["name"] for c in categories if filter == f"category:{c['id']}"), "Все приложения"))
+\ No newline at end of file
++            "running": "Запущено"}.get(view) or (
++        next((c["name"] for c in categories if view == f"category:{c['id']}"), "Все приложения"))
+\ No newline at end of file
+diff --git a/app/store.py b/app/store.py
+index ea62e2f..83d61f0 100644
+--- a/app/store.py
++++ b/app/store.py
+@@ -38,9 +38,6 @@ DEFAULT_SETTINGS = {
+     "icon_schema": 0,
+ }
+ 
+-CATEGORY_ICONS = ["work", "brush", "sports_esports", "code", "folder",
+-                  "movie", "music_note", "chat", "terminal", "rocket_launch"]
+-
+ 
+ def hue_from_string(text: str) -> int:
+     # usedforsecurity=False: this only picks a stable tile colour, and without
+diff --git a/app/ui.py b/app/ui.py
+index 9b0fa6b..9375c56 100644
+--- a/app/ui.py
++++ b/app/ui.py
+@@ -11,11 +11,10 @@ from . import __version__
+ from . import colors as C
+ from . import log
+ from . import queries
+-from .format import (
+-    CATEGORY_ICON_CHOICES, T, cat_icon, initials, plu_apps, plu_cats, time_ago)
++from .format import T, cat_icon, initials, plu_apps, plu_cats, time_ago
+ from .hotkeys import quick_accels
+-from .images import ( 
+-    _img_size, _is_launcher_art, _MIN_ART_PX, app_hue, icon_image, img_b64)
++from .images import (
++    MIN_ART_PX, app_hue, icon_image, img_b64, img_size, is_launcher_art)
+ from .store import Store
+ from .view_state import ViewState
+ 
+@@ -48,6 +47,10 @@ class CenturioUI:
+         # followed by "Добавить приложение" doesn't scan the machine twice.
+         self._discovered = None
+         self._discovered_at = 0.0
++        # Modal dialogs currently up. page.close() only flips control.open and
++        # leaves the dialog on the page, so there is nothing to inspect after
++        # the fact — the count has to be kept here.
++        self._open_dialogs: set = set()
+ 
+         self.search_field = ft.TextField(
+             value="", hint_text="Поиск приложений…", border=ft.InputBorder.NONE,
+@@ -178,7 +181,7 @@ class CenturioUI:
+         return container
+ 
+     def _chip_visual(self, a, size, letter_size, radius):
+-        fit = ft.ImageFit.COVER if _is_launcher_art(a) else ft.ImageFit.CONTAIN
++        fit = ft.ImageFit.COVER if is_launcher_art(a) else ft.ImageFit.CONTAIN
+         img = icon_image(a.get("icon"), width=size, height=size, fit=fit)
+         if img:
+             return ft.Container(
+@@ -194,8 +197,8 @@ class CenturioUI:
+ 
+     def _cover_content(self, a, cover_h):
+         icon_path = a.get("icon")
+-        size = _img_size(icon_path)
+-        if _is_launcher_art(a) and size and max(size) >= _MIN_ART_PX and icon_image(icon_path):
++        size = img_size(icon_path)
++        if is_launcher_art(a) and size and max(size) >= MIN_ART_PX and icon_image(icon_path):
+             if "logo" in os.path.basename(str(icon_path)).lower():
+                 return ft.Container(
+                     icon_image(icon_path, fit=ft.ImageFit.CONTAIN, expand=True),
+@@ -601,7 +604,7 @@ class CenturioUI:
+ 
+     def _use_poster(self, a):
+         return bool(self._settings.get("game_posters", True)
+-                    and _is_launcher_art(a) and img_b64(a.get("poster")))
++                    and is_launcher_art(a) and img_b64(a.get("poster")))
+ 
+     def _grid(self, apps):
+         tiles = [self._draggable_tile(a, apps) for a in apps]
+@@ -969,6 +972,32 @@ class CenturioUI:
+         except Exception:
+             log.exception("reporting a store write failure to the user failed")
+ 
++    @property
++    def dialog_open(self) -> bool:
++        """True while a modal dialog is up.
++
++        The page's keyboard handler keeps firing behind a modal dialog, so
++        without this the arrow keys moved the selection in the window nobody
++        was looking at and Enter launched whatever it landed on.
++        """
++        return bool(self._open_dialogs)
++
++    def open_dialog(self, dialog):
++        previous = getattr(dialog, "on_dismiss", None)
++
++        def dismissed(e):
++            self._open_dialogs.discard(dialog)
++            if previous is not None:
++                previous(e)
++
++        dialog.on_dismiss = dismissed
++        self._open_dialogs.add(dialog)
++        self.page.open(dialog)
++
++    def close_dialog(self, dialog):
++        self._open_dialogs.discard(dialog)
++        self.page.close(dialog)
++
+     def _toast(self, msg, error=False):
+         icon = ft.Icons.ERROR_OUTLINE if error else ft.Icons.CHECK_CIRCLE_OUTLINE
+         color = C.DANGER if error else C.GREEN
+diff --git a/tests/test_centurio.py b/tests/test_centurio.py
+index 04dad73..5cbcb4e 100644
+--- a/tests/test_centurio.py
++++ b/tests/test_centurio.py
+@@ -630,6 +630,12 @@ def test_autostart():
+         ok(autostart.sync(False) is False, "sync keeps 'off' outside Windows")
+ 
+ 
++def types_ns(**kw):
++    """A stand-in object with just the attributes a test hands it."""
++    import types
++    return types.SimpleNamespace(**kw)
++
++
+ def _find_control(node, pred, _depth=0):
+     """Depth-first search of a built Flet tree, so dialog tests don't index
+     into `content.controls[2].controls[0]` and break on every re-layout."""
+@@ -653,6 +659,56 @@ def _read(*parts) -> str:
+         return fh.read()
+ 
+ 
++def test_no_duplicate_icon_lists():
++    """format.ICON_PACK is the one list of category icons.
++
++    store.CATEGORY_ICONS and format.CATEGORY_ICON_CHOICES were byte-identical
++    copies of each other that nothing read.
++    """
++    from app import format as fmt
++    from app import store as store_mod
++
++    ok(not hasattr(store_mod, "CATEGORY_ICONS"), "store carries no icon list of its own")
++    ok(not hasattr(fmt, "CATEGORY_ICON_CHOICES"), "the unread choices copy is gone")
++    ok(isinstance(fmt.ICON_PACK, list) and len(fmt.ICON_PACK) > 10,
++       "ICON_PACK is the surviving list")
++    ok("CATEGORY_ICON" not in _read("app", "ui.py"),
++       "ui.py no longer imports a constant it never used")
++
++
++def test_admin_argument_quoting():
++    """The elevated command line is built with Windows' own quoting rules."""
++    import subprocess
++
++    from app.launcher import Launcher
++
++    built = []
++
++    class FakeShell:
++        @staticmethod
++        def ShellExecuteW(_h, _verb, _path, params, _cwd, _show):
++            built.append(params)
++            return 42
++
++    lch = Launcher()
++    real_ctypes = sys.modules.get("ctypes")
++    fake = types_ns(windll=types_ns(shell32=FakeShell()))
++    sys.modules["ctypes"] = fake
++    try:
++        args = ["--profile", "hello world", 'we"ird', r"C:\p ath" + "\\"]
++        res = lch._run_as_admin(r"C:\x\app.exe", args, r"C:\x")
++        ok(res.get("ok") is True, "a successful ShellExecuteW is reported as ok")
++        ok(built and built[0] == subprocess.list2cmdline(args),
++           f"arguments are quoted the way subprocess quotes them ({built})")
++        ok(built and '\\"' in built[0],
++           "an embedded quote is escaped instead of breaking the command line")
++    finally:
++        if real_ctypes is None:
++            sys.modules.pop("ctypes", None)
++        else:
++            sys.modules["ctypes"] = real_ctypes
++
++
+ def test_packaging_metadata():
+     """The version and the dependency list live in files that can't import
+     each other, so the check that they agree belongs here."""
+@@ -1466,6 +1522,140 @@ def test_ui_refresh_thread_safety():
+         ok(ui._snapshot is None, "no snapshot is left behind after the storm")
+ 
+ 
++def test_shutdown_releases_resources():
++    """Quitting used to rely entirely on daemon threads and os._exit.
++
++    Nothing called TrayController.stop() or Launcher.stop_monitor(), so the
++    tray icon and the psutil poll were left to be killed by process exit.
++    """
++    try:
++        from app import main as main_mod
++    except Exception as exc:
++        skip("shutdown test", exc)
++        return
++
++    # Checked rather than imported directly: a missing name would otherwise
++    # come back as an ImportError and turn this into a skip, not a failure.
++    ok(hasattr(main_mod, "shutdown"), "app.main exposes a shutdown routine")
++    shutdown = main_mod.shutdown
++
++    # The flag alone isn't the fix — on_key has to consult it. That handler is
++    # a closure inside main(), so the wiring is asserted on the source.
++    page_module = _read("app", "main.py")
++    ok("if ui.dialog_open:" in page_module,
++       "the page's key handler stands down while a dialog is open")
++
++    calls = []
++
++    class Recorder:
++        def __init__(self, label, boom=False):
++            self.label = label
++            self.boom = boom
++
++        def __call__(self):
++            calls.append(self.label)
++            if self.boom:
++                raise RuntimeError(f"{self.label} is already gone")
++
++    store = types_ns(flush=Recorder("flush"))
++    tray = types_ns(stop=Recorder("tray"))
++    launcher = types_ns(stop_monitor=Recorder("monitor"))
++    hotkeys = types_ns(stop=Recorder("hotkeys"))
++    geometry = types_ns(cancel=Recorder("geometry"))
++
++    shutdown(store=store, tray=tray, launcher=launcher, hotkeys=hotkeys,
++             geometry_flush=geometry)
++    ok(set(calls) == {"flush", "geometry", "hotkeys", "monitor", "tray"},
++       f"every resource is released ({calls})")
++    ok(calls[0] == "flush", "the store is flushed before anything is torn down")
++
++    calls.clear()
++    shutdown(store=types_ns(flush=Recorder("flush", boom=True)),
++             tray=types_ns(stop=Recorder("tray")),
++             launcher=types_ns(stop_monitor=Recorder("monitor")))
++    ok("tray" in calls and "monitor" in calls,
++       "a step that raises doesn't stop the rest of the teardown")
++
++    raised = None
++    try:
++        shutdown()
++    except Exception as exc:
++        raised = exc
++    ok(raised is None, "shutdown with nothing to release is a quiet no-op")
++
++
++def test_ui_dialog_suppresses_shortcuts():
++    """Key events keep arriving behind a modal dialog."""
++    try:
++        from unittest.mock import MagicMock
++
++        from app import dialogs
++        from app.ui import CenturioUI
++    except Exception as exc:
++        skip("UI dialog-shortcut test", exc)
++        return
++
++    with tempfile.TemporaryDirectory() as d:
++        store = Store(os.path.join(d, "data.json"))
++        store.add_app({"name": "App", "path": "/x/a", "category_id": "work"})
++        page = _FakePage()
++        ui = CenturioUI(page, store, MagicMock())
++        ok(ui.dialog_open is False, "no dialog is open to start with")
++
++        dialogs.open_context_menu(ui, store.state()["apps"][0])
++        ok(ui.dialog_open is True, "opening a dialog raises the flag")
++        opened = page.opened[-1]
++        ui.close_dialog(opened)
++        ok(ui.dialog_open is False, "closing it lowers the flag again")
++
++        # Dismissing without the buttons (Flet's own dismiss path) must also
++        # clear it, or the window's shortcuts stay dead for good.
++        dialogs.open_context_menu(ui, store.state()["apps"][0])
++        ok(ui.dialog_open is True, "second dialog opens")
++        page.opened[-1].on_dismiss(None)
++        ok(ui.dialog_open is False, "an on_dismiss also lowers the flag")
++
++        # Nested dialogs: the context menu opens a confirm on top of itself.
++        dialogs.open_context_menu(ui, store.state()["apps"][0])
++        menu = page.opened[-1]
++        dialogs.confirm(ui, "T", "OK", lambda: None)
++        ui.close_dialog(page.opened[-1])
++        ok(ui.dialog_open is True,
++           "closing the top dialog doesn't unlock the shortcuts under it")
++        ui.close_dialog(menu)
++        ok(ui.dialog_open is False, "closing the last one unlocks them")
++
++
++def test_ui_new_app_hue_varies():
++    """New tiles used to hash id(object()) — an address CPython reuses."""
++    try:
++        from unittest.mock import MagicMock
++
++        from app import dialogs
++        from app.ui import CenturioUI
++    except Exception as exc:
++        skip("UI hue test", exc)
++        return
++
++    # Tested at the source rather than through the dialog: building a dialog
++    # allocates enough to move the next address along, so the old scheme looked
++    # varied here while producing one single colour in a tight loop.
++    drawn = [dialogs.new_hue() for _ in range(48)]
++    ok(all(isinstance(h, int) and 0 <= h < 360 for h in drawn),
++       "every generated hue is an int in range")
++    ok(len(set(drawn)) > 20,
++       f"consecutive draws differ ({len(set(drawn))} distinct out of 48)")
++
++    with tempfile.TemporaryDirectory() as d:
++        store = Store(os.path.join(d, "data.json"))
++        page = _FakePage()
++        ui = CenturioUI(page, store, MagicMock())
++        dialogs._open_detail_dialog(ui, None)
++        slider = _find_control(page.opened[-1], lambda c: getattr(c, "max", None) == 359)
++        ok(slider is not None and 0 <= slider.value < 360,
++           "a draft dialog opens with a usable hue on its slider")
++
++
+ def test_ui_categories_dialog_reads():
+     """Rebuilding the category list used to deep-copy the library per row."""
+     try:
+@@ -1567,6 +1757,8 @@ if __name__ == "__main__":
+     test_hotkey_no_double_launch()
+     test_geometry_debounce()
+     test_autostart()
++    test_no_duplicate_icon_lists()
++    test_admin_argument_quoting()
+     test_packaging_metadata()
+     test_single_entry_point()
+     test_colors()
+@@ -1586,6 +1778,9 @@ if __name__ == "__main__":
+     test_ui_refresh_thread_safety()
+     test_ui_categories_dialog_reads()
+     test_ui_background_rescan()
++    test_shutdown_releases_resources()
++    test_ui_dialog_suppresses_shortcuts()
++    test_ui_new_app_hue_varies()
+     code, line = _summarize(_passed, _failed, _skipped, bool(os.environ.get("CI")))
+     print(f"\n{line}")
+     sys.exit(code)
