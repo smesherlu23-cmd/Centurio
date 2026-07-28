@@ -1656,6 +1656,69 @@ def test_ui_new_app_hue_varies():
            "a draft dialog opens with a usable hue on its slider")
 
 
+def test_ui_context_menu_delete_visible():
+    """The delete entry used to live in the dialog's action bar.
+
+    That bar is a row, so the Divider next to it took the full width and
+    pushed the button past the dialog's edge — an empty strip under the menu
+    where the entry should be. It belongs in the menu column with the rest.
+    """
+    try:
+        import flet as ft
+        from unittest.mock import MagicMock
+
+        from app import dialogs
+        from app.ui import CenturioUI
+    except Exception as exc:
+        skip("UI context-menu delete test", exc)
+        return
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        app_id = store.add_app({"name": "App", "path": "/x/a", "category_id": "work"})["id"]
+        page = _FakePage()
+        ui = CenturioUI(page, store, MagicMock())
+
+        dialogs.open_context_menu(ui, store.get_app(app_id))
+        menu = page.opened[-1]
+
+        ok(not (menu.actions or []), "the menu keeps nothing in the action bar")
+
+        column = _find_control(menu.content, lambda c: isinstance(c, ft.Column))
+        ok(column is not None, "the menu body is a column of entries")
+        rows = list(column.controls or [])
+        ok(any(isinstance(c, ft.Divider) for c in rows),
+           "the separator sits inside the menu, above the delete entry")
+
+        def labels(control):
+            found = []
+
+            def walk(node, depth=0):
+                if depth > 12 or node is None or isinstance(node, str):
+                    return
+                if isinstance(node, ft.Text):
+                    found.append(node.value)
+                for attr in ("controls", "actions"):
+                    for child in getattr(node, attr, None) or []:
+                        walk(child, depth + 1)
+                walk(getattr(node, "content", None), depth + 1)
+            walk(control)
+            return found
+
+        delete_row = next((r for r in rows if "Удалить" in labels(r)), None)
+        ok(delete_row is not None, "the delete entry is one of the menu's rows")
+        ok(getattr(delete_row, "on_click", None) is not None, "the delete entry is clickable")
+        ok(getattr(delete_row, "on_hover", None) is not None,
+           "the delete entry highlights on hover like the others")
+
+        # And it still deletes: click through the menu row, then the confirm.
+        delete_row.on_click(None)
+        confirm_dlg = page.opened[-1]
+        ok(confirm_dlg is not menu, "clicking delete opens the confirmation")
+        confirm_dlg.actions[0].controls[-1].on_click(None)
+        ok(store.get_app(app_id) is None, "confirming removes the app")
+
+
 def test_ui_categories_dialog_reads():
     """Rebuilding the category list used to deep-copy the library per row."""
     try:
@@ -1781,6 +1844,7 @@ if __name__ == "__main__":
     test_shutdown_releases_resources()
     test_ui_dialog_suppresses_shortcuts()
     test_ui_new_app_hue_varies()
+    test_ui_context_menu_delete_visible()
     code, line = _summarize(_passed, _failed, _skipped, bool(os.environ.get("CI")))
     print(f"\n{line}")
     sys.exit(code)
