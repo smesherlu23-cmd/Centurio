@@ -22,6 +22,113 @@ GREEN = "#4ade80"
 DANGER = "#e34f4f"
 STAR = "#f5c518"
 
+# ---- Добавлено редизайном ----
+# Имена ниже — из спецификации; старые константы выше остались как были, потому
+# что раскладка библиотеки не менялась и продолжает ими пользоваться.
+
+ACCENT = "#f5f5f7"           # главная кнопка, бейдж разбора, активный переключатель
+ON_ACCENT = "#0b0b0d"        # текст и глиф на акценте
+WHITE = "#ffffff"            # глиф категории на цветной кнопке рельса
+
+# Площадка иконки приложения — она же заглушка, когда иконку достать не удалось.
+SLOT_BG = "#15151b"
+SLOT_BORDER = "#26262e"
+SLOT_GLYPH = "#7f8590"
+
+TEXT_DIM = "#5a5f68"         # пояснения в настройках и разборе
+TEXT_FAINT = "#4a4f58"       # номера мест, счётчики в меню
+TEXT_GHOST = "#2e2e37"       # пустой слот, тихие иконки в «Запуске»
+HINT = "#33383f"             # строка подсказок в «Запуске»
+WINDOW_BORDER = "#23232b"    # рамка окна «Запуска», трек спиннера
+PANEL_ACTIVE = "#1e1e22"     # активная кнопка рельса, активный сегмент
+DASHED_RAIL = "#3a3a44"      # пунктир вокруг значка разбора
+MATCH_BG = "#2b2b33"         # подсветка совпавшей подстроки
+TOGGLE_OFF = "#2a2a30"       # выключенный переключатель
+DOT = "#43434c"              # точка у секции без категории
+SEGMENT_BORDER = "#1e1e25"   # рамка сегментного переключателя
+PROGRESS_TRACK = "#1a1a21"   # непройденная часть полосы разбора
+SLOT_BORDER_SEL = "#2e2e38"  # площадка иконки на выбранной плитке
+SLOT_GLYPH_SEL = "#8f959f"
+
+SELECTED_BG = "#141418"      # выбранная плитка
+MENU_BORDER = "#2c2c33"
+TOAST_BG = "#17171b"
+TOAST_BORDER = "#2e2e38"
+
+BADGE_BG = "#0c100e"         # бейдж «Запущено»
+BADGE_BORDER = "#2a5f42"
+BADGE_TEXT = "#d8fce6"
+GREEN_TEXT = "#7ee2a8"
+
+# Трёхзначный #e88 из макета Flutter не понимает — он рисуется прозрачным.
+ERR_TEXT = "#ee8888"
+ERR_BG = "#1a1113"
+ERR_BORDER = "#3a2222"
+ERR_BTN_BORDER = "#5a2a2a"
+
+# Карточка набора в ленте быстрого запуска — тише обычной.
+SET_BG = "#0e0e12"
+SET_BORDER = "#1c1c23"
+SET_SLOT_BG = "#131318"
+SET_SLOT_BORDER = "#202028"
+DASHED = "#1f1f27"           # пустое место в ленте
+
+# Разбор
+TRIAGE_SLOT_BORDER = "#2a2a33"
+TRIAGE_PICK_BG = "#141418"
+TRIAGE_PICK_BORDER = "#33333a"
+TRIAGE_CHIP_BORDER = "#212128"
+DONE_BG = "#0e130f"
+DONE_BORDER = "#244530"
+
+TRANSPARENT = "#00000000"
+SCRIM = "#0c0c0edd"          # подложка звезды поверх обложки
+OVERLAY = "#05050699"        # затемнение под карточкой первого запуска
+SHADOW_MENU = "#000000b3"    # 0 24px 60px rgba(0,0,0,0.7)
+SHADOW_TOAST = "#00000099"   # 0 20px 50px rgba(0,0,0,0.6)
+
+# Единственные цвета, которыми может быть категория. Три RGB-ползунка позволяли
+# выбрать в том числе цвет, неразличимый на #08080a.
+CAT_PALETTE = ("#e6e6e8", "#f5c518", "#f0a020", "#e34f4f",
+               "#b06cf0", "#4f7dff", "#3ecfaf", "#7a8290")
+ACCENT_CHOICES = ("#f5f5f7", "#4f7dff", "#3ecfaf", "#f0a020")
+
+TILE_GRADIENT = ("#191920", "#111116")
+POSTER_SCRIM = ("#00000000", "#000000e8")
+HUE_STRIP = ("#e34f4f", "#f0a020", "#f5c518", "#4ade80",
+             "#3ecfaf", "#4f7dff", "#b06cf0", "#e34f4f")
+
+# ---- Размеры ----
+RAIL_W = 76
+RAIL_BTN = 44
+SIDEBAR_W = 236
+INSPECTOR_W = 320
+TILE_W = 186
+TILE_W_COMPACT = 152
+TILE_COVER_H = 116
+TILE_COVER_H_COMPACT = 96
+TILE_SLOT = 60
+TILE_SLOT_COMPACT = 48
+QUICK_W = 152
+POSTER_W = 150
+POSTER_H = 225
+POSTER_W_COMPACT = 124
+POSTER_H_COMPACT = 186
+LAUNCH_W = 720
+LAUNCH_H = 520
+LIBRARY_W = 1400
+LIBRARY_H = 880
+LIBRARY_MIN_W = 940
+LIBRARY_MIN_H = 620
+MENU_W = 300
+POPOVER_W = 330
+TOAST_MIN_W = 360
+TOAST_MAX_W = 520
+
+# ---- Анимация ----
+ANIM_FAST = 120
+ANIM_HOVER = 100
+
 
 def _hex(rgb) -> str:
     r, g, b = rgb
@@ -85,9 +192,36 @@ def rgb_to_hex(r: int, g: int, b: int) -> str:
     return "#%02x%02x%02x" % (clamp(r), clamp(g), clamp(b))
 
 
-def category_color(cat: dict) -> str:
+def with_alpha(hex_color: str, alpha: float) -> str:
+    """#rrggbb -> #rrggbbaa, for scrims Flet can't express as opacity."""
+    base = parse_hex(hex_color) or "#000000"
+    return base + "%02x" % max(0, min(255, round(alpha * 255)))
+
+
+def hsl_to_hex(hue: float, lightness: float, saturation: float = 0.62) -> str:
+    """The two sliders the category popover offers, turned back into a colour."""
+    r, g, b = colorsys.hls_to_rgb((hue % 360) / 360.0,
+                                  max(0.0, min(1.0, lightness)),
+                                  max(0.0, min(1.0, saturation)))
+    return _hex((r, g, b))
+
+
+def hex_to_hsl(hex_color: str) -> tuple[float, float, float]:
+    r, g, b = (v / 255 for v in hex_to_rgb(hex_color))
+    h, lightness, s = colorsys.rgb_to_hls(r, g, b)
+    return h * 360, lightness, s
+
+
+def palette_color(text: str) -> str:
+    """A stable palette entry for a category that never picked a colour."""
     from .store import hue_from_string
+    return CAT_PALETTE[hue_from_string(text or "") % len(CAT_PALETTE)]
+
+
+def category_color(cat: dict) -> str:
     col = parse_hex(cat.get("color"))
-    if col:
+    # "#ffffff" was the old default for every category: it isn't in the palette
+    # and it made four categories in a row indistinguishable in the rail.
+    if col and col != "#ffffff":
         return col
-    return cover_colors(hue_from_string(cat.get("name") or cat.get("id") or ""))[0]
+    return palette_color(cat.get("name") or cat.get("id") or "")
