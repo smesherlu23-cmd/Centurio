@@ -85,3 +85,7 @@ def plu_apps(n):
 
 def plu_cats(n):
     return _plural(n, "категория", "категории", "категорий")
+
+
+def plu_programs(n):
+    return _plural(n, "программа", "программы", "программ")
