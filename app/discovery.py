@@ -20,47 +20,23 @@ _WIN_NAME_JUNK = ("node.js", "command prompt", "командная строка"
                   "web platform", "webview")
 
 
-def discover_apps(icon_cache: str | None = None, on_progress=None,
-                  report: dict | None = None) -> list[dict]:
-    """Walk every source. Always returns a list, even if a source blows up.
-
-    `on_progress(label, done, total)` is called before each source so the
-    "Смотрю, что установлено" card can name what is being read. Sources that
-    fail are appended to `report["errors"]` — the add screen turns each one
-    into a message with an action that closes it, instead of a silent gap in
-    the list.
-    """
+def discover_apps(icon_cache: str | None = None) -> list[dict]:
     if icon_cache:
         try:
             os.makedirs(icon_cache, exist_ok=True)
         except OSError:
             icon_cache = None
-
-    steps = []
-    if os.name == "nt":
-        steps.append(("windows", "Меню «Пуск» и реестр", _discover_windows))
-    steps += [("steam", "Steam", _steam_games), ("epic", "Epic Games", _epic_games)]
-
     apps: list[dict] = []
-    errors = []
-    for index, (key, label, fn) in enumerate(steps):
-        if on_progress:
-            try:
-                on_progress(label, index, len(steps))
-            except Exception:
-                log.exception("scan progress callback failed")
+    if os.name == "nt":
+        try:
+            apps += _discover_windows(icon_cache)
+        except Exception:
+            log.exception("Windows app discovery failed")
+    for fn in (_steam_games, _epic_games):
         try:
             apps += fn(icon_cache)
-        except Exception as exc:
-            log.exception("%s discovery failed", key)
-            errors.append({"source": key, "label": label, "error": str(exc)})
-    if on_progress:
-        try:
-            on_progress("", len(steps), len(steps))
         except Exception:
-            log.exception("scan progress callback failed")
-    if report is not None:
-        report["errors"] = errors
+            log.exception("%s failed", getattr(fn, "__name__", fn))
     return _dedupe(apps)
 
 
@@ -77,8 +53,6 @@ def _dedupe(apps: list[dict]) -> list[dict]:
                          "icon_fit": a.get("icon_fit", "contain"), "source": a.get("source", ""),
                          "sub": a.get("sub", ""), "track_exe": a.get("track_exe"),
                          "poster": a.get("poster")}
-        elif not seen[key].get("source") and a.get("source"):
-            seen[key]["source"] = a["source"]
         elif not seen[key].get("icon") and a.get("icon"):
             seen[key]["icon"] = a.get("icon")
             seen[key]["icon_fit"] = a.get("icon_fit", "contain")
@@ -141,13 +115,13 @@ function Save-Icon($exe){
 _WIN_PS = _PS_ICON_FUNCS + r'''
 $sh=New-Object -ComObject WScript.Shell
 $out=New-Object System.Collections.ArrayList
-function Add-App($n,$p,$s){ if(-not $n -or -not $p){ return }; if($p.ToLower() -like '*\windows\*'){ return }; $ic=Save-Icon $p; [void]$out.Add([PSCustomObject]@{name="$n";path="$p";icon=$ic;src="$s"}) }
+function Add-App($n,$p){ if(-not $n -or -not $p){ return }; if($p.ToLower() -like '*\windows\*'){ return }; $ic=Save-Icon $p; [void]$out.Add([PSCustomObject]@{name="$n";path="$p";icon=$ic}) }
 
 $menus=@(__DIRS__)
 foreach($d in $menus){
   Get-ChildItem -LiteralPath $d -Recurse -Filter *.lnk 2>$null | ForEach-Object {
     $t=$sh.CreateShortcut($_.FullName); $p=$t.TargetPath
-    if($p -and $p.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $p)){ Add-App $_.BaseName $p 'startmenu' }
+    if($p -and $p.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $p)){ Add-App $_.BaseName $p }
   }
 }
 $uks=@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall')
@@ -157,14 +131,14 @@ foreach($k in $uks){
     if(-not $pr.DisplayName){ return }
     if($pr.SystemComponent -eq 1){ return }
     $icon=$pr.DisplayIcon
-    if($icon){ $exe=($icon -split ',')[0].Trim('"'); if($exe -and $exe.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $exe)){ Add-App $pr.DisplayName $exe 'registry' } }
+    if($icon){ $exe=($icon -split ',')[0].Trim('"'); if($exe -and $exe.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $exe)){ Add-App $pr.DisplayName $exe } }
   }
 }
 $aps=@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths')
 foreach($k in $aps){
   Get-ChildItem -LiteralPath $k 2>$null | ForEach-Object {
     $p=(Get-Item -LiteralPath $_.PSPath).GetValue(''); if($p){ $p=$p.Trim('"') }
-    if($p -and $p.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $p)){ Add-App ([System.IO.Path]::GetFileNameWithoutExtension($p)) $p 'registry' }
+    if($p -and $p.ToLower().EndsWith('.exe') -and (Test-Path -LiteralPath $p)){ Add-App ([System.IO.Path]::GetFileNameWithoutExtension($p)) $p }
   }
 }
 $out | ConvertTo-Json -Compress
@@ -216,11 +190,8 @@ def _discover_windows(icon_cache: str | None) -> list[dict]:
         name, path = x.get("name"), x.get("path")
         if not name or not path or _is_windows_system(name, path):
             continue
-        # The add screen groups by where a program came from, so a Start Menu
-        # shortcut and an uninstall key are not the same source any more.
-        src = x.get("src") if x.get("src") in ("startmenu", "registry") else "registry"
         apps.append({"name": name, "path": path, "icon": x.get("icon"),
-                     "icon_fit": "contain", "source": src})
+                     "icon_fit": "contain", "source": "windows"})
     return apps
 
 
@@ -603,104 +574,6 @@ def _epic_games(icon_cache: str | None) -> list[dict]:
                       "icon_fit": "contain", "source": "epic", "sub": "Epic Games",
                       "track_exe": track})
     return games
-
-
-# ---- Первый запуск: что предложить закрепить ----
-_SHORTCUT_EXT = (".lnk", ".url")
-
-
-def _norm(name: str) -> str:
-    return re.sub(r"[^a-z0-9а-яё]+", "", (name or "").lower())
-
-
-def _shortcut_names(directory: str) -> set[str]:
-    """Basenames of the shortcuts in a folder, normalised for matching.
-
-    Deliberately name-based: resolving a .lnk needs COM, and this only has to
-    be good enough to answer "does this look like something you use daily".
-    """
-    out: set[str] = set()
-    try:
-        entries = os.listdir(directory)
-    except OSError:
-        return out
-    for entry in entries:
-        stem, ext = os.path.splitext(entry)
-        if ext.lower() in _SHORTCUT_EXT:
-            norm = _norm(stem)
-            if norm:
-                out.add(norm)
-    return out
-
-
-def desktop_names() -> set[str]:
-    home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
-    names: set[str] = set()
-    for folder in ("Desktop", "Рабочий стол"):
-        names |= _shortcut_names(os.path.join(home, folder))
-    public = os.environ.get("PUBLIC")
-    if public:
-        names |= _shortcut_names(os.path.join(public, "Desktop"))
-    return names
-
-
-def autostart_names() -> set[str]:
-    """What Windows starts at login: the Startup folder and the Run key."""
-    names: set[str] = set()
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        names |= _shortcut_names(os.path.join(
-            appdata, r"Microsoft\Windows\Start Menu\Programs\Startup"))
-    if os.name != "nt":
-        return names
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                            r"Software\Microsoft\Windows\CurrentVersion\Run") as key:
-            for i in range(winreg.QueryInfoKey(key)[1]):
-                value_name = winreg.EnumValue(key, i)[0]
-                norm = _norm(value_name)
-                if norm:
-                    names.add(norm)
-    except OSError:
-        pass
-    except Exception:
-        log.exception("reading the Run key for first-run suggestions failed")
-    return names
-
-
-def suggest_first_run(found: list[dict], limit: int = 8) -> list[dict]:
-    """Pick the programs worth offering on the first-run screen.
-
-    Ranked by evidence the user actually relies on them — in the Run key,
-    then on the desktop, then whatever else the Start Menu turned up. Each
-    suggestion carries the reason, because the screen shows it.
-    """
-    try:
-        startup, desktop = autostart_names(), desktop_names()
-    except Exception:
-        log.exception("collecting first-run hints failed")
-        startup, desktop = set(), set()
-
-    tiers: list[list[dict]] = [[], [], []]
-    for item in found:
-        norm = _norm(item.get("name"))
-        if not norm:
-            continue
-        if norm in startup:
-            tiers[0].append({"app": item, "hint": "в автозагрузке"})
-        elif norm in desktop:
-            tiers[1].append({"app": item, "hint": "на рабочем столе"})
-        elif item.get("source") == "startmenu":
-            tiers[2].append({"app": item, "hint": "в меню «Пуск»"})
-
-    out: list[dict] = []
-    for tier in tiers:
-        for suggestion in tier:
-            if len(out) >= limit:
-                return out
-            out.append(suggestion)
-    return out
 
 
 # ---- Icons for apps the user adds by hand ----

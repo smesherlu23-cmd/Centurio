@@ -18,10 +18,6 @@ DEFAULT_CATEGORIES = [
     {"id": "dev", "name": "Разработка", "icon": "code", "color": "#ffffff", "order": 3},
 ]
 
-# The combination that shows and hides the "Запуск" window. Stored so the
-# settings screen can rebind it; the format is the one hotkeys.to_pynput reads.
-DEFAULT_LAUNCH_HOTKEY = "Ctrl+Space"
-
 DEFAULT_SETTINGS = {
     "autostart": False,
     "minimize_to_tray": True,
@@ -40,14 +36,6 @@ DEFAULT_SETTINGS = {
     "win_y": None,
     "win_max": False,
     "icon_schema": 0,
-    # Добавлено редизайном
-    "launch_hotkey": DEFAULT_LAUNCH_HOTKEY,
-    "hide_after": True,      # прятать окно после запуска
-    "triage": True,          # складывать новое в разбор
-    "calm": False,           # «Спокойный вид»
-    "hints": True,           # строка подсказок в «Запуске»
-    "debug_log": False,
-    "onboarded": False,
 }
 
 
@@ -98,48 +86,6 @@ def _clean_category(item, index: int) -> dict | None:
     name = rec.get("name")
     rec["name"] = name.strip() if isinstance(name, str) and name.strip() else "Категория"
     rec["order"] = _as_int(rec.get("order"), index)
-    # Своя картинка: путь к файлу рядом с библиотекой либо ничего.
-    rec["image"] = rec["image"] if isinstance(rec.get("image"), str) and rec["image"] else None
-    return rec
-
-
-def _clean_set(item, index: int) -> dict | None:
-    """One app set: several programs behind a single card."""
-    if not isinstance(item, dict):
-        return None
-    set_id = item.get("id")
-    if not isinstance(set_id, str) or not set_id.strip():
-        return None
-    rec = dict(item)
-    rec["id"] = set_id
-    name = rec.get("name")
-    rec["name"] = name.strip() if isinstance(name, str) and name.strip() else "Набор"
-    raw_apps = rec.get("apps")
-    rec["apps"] = [a for a in raw_apps if isinstance(a, str)] if isinstance(raw_apps, list) else []
-    rec["order"] = _as_int(rec.get("order"), index)
-    rec["quick"] = bool(rec.get("quick"))
-    return rec
-
-
-def _clean_inbox(item, index: int) -> dict | None:
-    """One entry waiting in «Разбор».
-
-    It is not an app yet — it is a candidate the user has not placed anywhere,
-    so it carries what a scan found and nothing the library would need.
-    """
-    if not isinstance(item, dict):
-        return None
-    path = item.get("path")
-    if not isinstance(path, str) or not path.strip():
-        return None
-    rec = dict(item)
-    rec["id"] = item["id"] if isinstance(item.get("id"), str) and item["id"] else path.lower()
-    rec["path"] = path.strip()
-    name = rec.get("name")
-    rec["name"] = name.strip() if isinstance(name, str) and name.strip() else "Без названия"
-    rec["source"] = rec["source"] if isinstance(rec.get("source"), str) else ""
-    rec["order"] = _as_int(rec.get("order"), index)
-    rec["found_at"] = _as_int(rec.get("found_at"))
     return rec
 
 
@@ -191,11 +137,9 @@ class Store:
 
     def _defaults(self) -> dict:
         return {
-            "version": 2,
+            "version": 1,
             "categories": copy.deepcopy(DEFAULT_CATEGORIES),
             "apps": [],
-            "sets": [],
-            "inbox": [],
             "settings": dict(DEFAULT_SETTINGS),
         }
 
@@ -224,27 +168,12 @@ class Store:
         Corrupt JSON is quarantined by _load; this is the other half — JSON
         that parses but carries junk (a record without an id, a string where a
         timestamp belongs, settings that aren't even an object).
-
-        It doubles as the migration: a file written by an older version has no
-        "sets" and no "inbox", and comes back with them empty.
         """
         cats = _clean_records(parsed.get("categories"), _clean_category)
-        apps = _clean_records(parsed.get("apps"), _clean_app)
-        known = {a["id"] for a in apps}
-        sets = _clean_records(parsed.get("sets"), _clean_set)
-        for rec in sets:
-            # A set that outlived the programs in it would launch nothing and
-            # still count them.
-            rec["apps"] = [aid for aid in rec["apps"] if aid in known]
-        have = {(a.get("path") or "").lower() for a in apps}
-        inbox = [i for i in _clean_records(parsed.get("inbox"), _clean_inbox)
-                 if i["path"].lower() not in have]
         return {
-            "version": 2,
+            "version": _as_int(parsed.get("version"), 1),
             "categories": cats or copy.deepcopy(DEFAULT_CATEGORIES),
-            "apps": apps,
-            "sets": [s for s in sets if s["apps"]],
-            "inbox": inbox,
+            "apps": _clean_records(parsed.get("apps"), _clean_app),
             "settings": _clean_settings(parsed.get("settings")),
         }
 
@@ -354,21 +283,6 @@ class Store:
                 self._persist()
             return app
 
-    def update_apps(self, app_ids, patch: dict) -> int:
-        """One patch, many apps, a single write.
-
-        The context menu moves, favourites and pins whole selections; doing it
-        through update_app() rewrote the JSON file once per app.
-        """
-        with self._lock:
-            touched = 0
-            for app_id in dict.fromkeys(app_ids):
-                if self.update_app(app_id, patch, persist=False) is not None:
-                    touched += 1
-            if touched:
-                self._persist()
-            return touched
-
     def reorder_apps(self, ordered_ids: list[str]) -> None:
         with self._lock:
             pos = {aid: i for i, aid in enumerate(ordered_ids)}
@@ -378,38 +292,13 @@ class Store:
             self._persist()
 
     def remove_app(self, app_id: str) -> bool:
-        return bool(self.remove_apps([app_id]))
-
-    def remove_apps(self, app_ids) -> list[dict]:
-        """Drop several apps and hand the records back.
-
-        Removal is not confirmed any more — it is undone from a toast for eight
-        seconds — so the caller needs the whole record, not just the ids. Sets
-        lose the removed members too.
-        """
-        wanted = set(app_ids)
         with self._lock:
-            gone = [a for a in self.data["apps"] if a["id"] in wanted]
-            if not gone:
-                return []
-            self.data["apps"] = [a for a in self.data["apps"] if a["id"] not in wanted]
-            for rec in self.data["sets"]:
-                rec["apps"] = [aid for aid in rec["apps"] if aid not in wanted]
-            self.data["sets"] = [s for s in self.data["sets"] if s["apps"]]
-            self._persist()
-            return copy.deepcopy(gone)
-
-    def restore_apps(self, records) -> int:
-        """Put back what remove_apps() returned, ignoring ids that came back."""
-        with self._lock:
-            have = {a["id"] for a in self.data["apps"]}
-            fresh = [copy.deepcopy(r) for r in records
-                     if isinstance(r, dict) and r.get("id") and r["id"] not in have]
-            if not fresh:
-                return 0
-            self.data["apps"] += fresh
-            self._persist()
-            return len(fresh)
+            before = len(self.data["apps"])
+            self.data["apps"] = [a for a in self.data["apps"] if a["id"] != app_id]
+            changed = len(self.data["apps"]) != before
+            if changed:
+                self._persist()
+            return changed
 
     def mark_launched(self, app_id: str) -> dict | None:
         with self._lock:
@@ -424,7 +313,7 @@ class Store:
     def add_category(self, name: str, icon: str | None = None, color: str | None = None) -> dict:
         with self._lock:
             cat = {"id": str(uuid.uuid4()), "name": name or "Категория",
-                   "icon": icon or None, "color": color or "#ffffff", "image": None,
+                   "icon": icon or None, "color": color or "#ffffff",
                    "order": len(self.data["categories"])}
             self.data["categories"].append(cat)
             self._persist()
@@ -435,7 +324,7 @@ class Store:
             cat = next((c for c in self.data["categories"] if c["id"] == cat_id), None)
             if not cat:
                 return None
-            for key in ("name", "icon", "color", "order", "image"):
+            for key in ("name", "icon", "color", "order"):
                 if key in patch:
                     cat[key] = patch[key]
             self._persist()
@@ -462,161 +351,18 @@ class Store:
             ids.insert(j, ids.pop(i))
             self.reorder_categories(ids)
 
-    def remove_category(self, cat_id: str) -> dict | None:
-        """Delete a category, returning what it takes to put it back.
-
-        Deleting is not confirmed any more, it is undone — and that needs both
-        the record and the apps that were reassigned, because their old
-        category_id goes with it.
-        """
+    def remove_category(self, cat_id: str) -> bool:
         with self._lock:
-            cat = next((c for c in self.data["categories"] if c["id"] == cat_id), None)
-            if cat is None:
-                return None
+            before = len(self.data["categories"])
             self.data["categories"] = [c for c in self.data["categories"] if c["id"] != cat_id]
             fallback = self.data["categories"][0]["id"] if self.data["categories"] else None
-            moved = []
             for app in self.data["apps"]:
                 if app.get("category_id") == cat_id:
                     app["category_id"] = fallback
-                    moved.append(app["id"])
-            self._persist()
-            return {"category": copy.deepcopy(cat), "apps": moved}
-
-    def restore_category(self, undo: dict) -> bool:
-        """Undo remove_category(): the record back, its apps back into it."""
-        if not isinstance(undo, dict) or not isinstance(undo.get("category"), dict):
-            return False
-        cat = undo["category"]
-        if not cat.get("id"):
-            return False
-        with self._lock:
-            if any(c["id"] == cat["id"] for c in self.data["categories"]):
-                return False
-            self.data["categories"].append(copy.deepcopy(cat))
-            self.data["categories"].sort(key=lambda c: c.get("order", 0))
-            back = set(undo.get("apps") or [])
-            for app in self.data["apps"]:
-                if app["id"] in back:
-                    app["category_id"] = cat["id"]
-            self._persist()
-            return True
-
-    # ---- Наборы ----
-    def add_set(self, name: str, app_ids, quick: bool = True) -> dict | None:
-        with self._lock:
-            known = {a["id"] for a in self.data["apps"]}
-            members = [aid for aid in dict.fromkeys(app_ids) if aid in known]
-            if not members:
-                return None
-            rec = {"id": str(uuid.uuid4()), "name": (name or "").strip() or "Набор",
-                   "apps": members, "quick": bool(quick), "order": len(self.data["sets"])}
-            self.data["sets"].append(rec)
-            self._persist()
-            return copy.deepcopy(rec)
-
-    def get_set(self, set_id: str) -> dict | None:
-        with self._lock:
-            found = next((s for s in self.data["sets"] if s["id"] == set_id), None)
-            return copy.deepcopy(found) if found else None
-
-    def update_set(self, set_id: str, patch: dict) -> dict | None:
-        with self._lock:
-            rec = next((s for s in self.data["sets"] if s["id"] == set_id), None)
-            if not rec:
-                return None
-            if "name" in patch:
-                rec["name"] = (patch["name"] or "").strip() or rec["name"]
-            if "quick" in patch:
-                rec["quick"] = bool(patch["quick"])
-            if "apps" in patch:
-                known = {a["id"] for a in self.data["apps"]}
-                rec["apps"] = [aid for aid in dict.fromkeys(patch["apps"] or []) if aid in known]
-            self._persist()
-            return copy.deepcopy(rec)
-
-    def remove_set(self, set_id: str) -> dict | None:
-        with self._lock:
-            rec = next((s for s in self.data["sets"] if s["id"] == set_id), None)
-            if not rec:
-                return None
-            self.data["sets"] = [s for s in self.data["sets"] if s["id"] != set_id]
-            self._persist()
-            return copy.deepcopy(rec)
-
-    def restore_set(self, record: dict) -> bool:
-        if not isinstance(record, dict) or not record.get("id"):
-            return False
-        with self._lock:
-            if any(s["id"] == record["id"] for s in self.data["sets"]):
-                return False
-            self.data["sets"].append(copy.deepcopy(record))
-            self.data["sets"].sort(key=lambda s: s.get("order", 0))
-            self._persist()
-            return True
-
-    # ---- Разбор ----
-    def queue_inbox(self, items) -> int:
-        """Put found programs in the triage queue, skipping known ones.
-
-        Both the library and the queue itself are checked, so the same program
-        can't be queued twice by two scans.
-        """
-        with self._lock:
-            have = {(a.get("path") or "").lower() for a in self.data["apps"]}
-            have |= {i["path"].lower() for i in self.data["inbox"]}
-            added = 0
-            for item in items:
-                path = (item.get("path") or "").strip()
-                if not path or path.lower() in have:
-                    continue
-                have.add(path.lower())
-                self.data["inbox"].append({
-                    "id": str(uuid.uuid4()),
-                    "name": item.get("name") or "Без названия",
-                    "path": path,
-                    "icon": item.get("icon"),
-                    "icon_fit": item.get("icon_fit") or "contain",
-                    "poster": item.get("poster"),
-                    "sub": item.get("sub") or "",
-                    "track_exe": item.get("track_exe"),
-                    "source": item.get("source") or "",
-                    "found_at": int(time.time() * 1000),
-                    "order": len(self.data["inbox"]),
-                })
-                added += 1
-            if added:
+            changed = len(self.data["categories"]) != before
+            if changed:
                 self._persist()
-            return added
-
-    def take_inbox(self, item_id: str) -> dict | None:
-        """Remove one entry from the queue and return it."""
-        with self._lock:
-            item = next((i for i in self.data["inbox"] if i["id"] == item_id), None)
-            if item is None:
-                return None
-            self.data["inbox"] = [i for i in self.data["inbox"] if i["id"] != item_id]
-            self._persist()
-            return copy.deepcopy(item)
-
-    def restore_inbox(self, item: dict) -> bool:
-        if not isinstance(item, dict) or not item.get("id"):
-            return False
-        with self._lock:
-            if any(i["id"] == item["id"] for i in self.data["inbox"]):
-                return False
-            self.data["inbox"].append(copy.deepcopy(item))
-            self.data["inbox"].sort(key=lambda i: i.get("order", 0))
-            self._persist()
-            return True
-
-    def clear_inbox(self) -> list[dict]:
-        with self._lock:
-            gone = copy.deepcopy(self.data["inbox"])
-            if gone:
-                self.data["inbox"] = []
-                self._persist()
-            return gone
+            return changed
 
     def set_setting(self, key: str, value, persist: bool = True) -> dict:
         with self._lock:

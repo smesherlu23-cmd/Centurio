@@ -32,32 +32,6 @@ def to_pynput(accel: str) -> str:
     return "+".join(out)
 
 
-# Combinations offered for showing and hiding "Запуск". Anything here has to
-# survive to_pynput() and be unlikely to collide with a program's own shortcut.
-LAUNCH_HOTKEYS = ("Ctrl+Space", "Alt+Space", "Ctrl+Shift+Space", "Ctrl+Alt+Space")
-
-_KEY_LABELS = {"space": "Пробел", "enter": "Ввод", "esc": "Esc", "escape": "Esc",
-               "tab": "Tab", "backspace": "Backspace"}
-
-
-def format_accel(accel: str | None) -> str:
-    """How a combination is spelled on screen: "Ctrl+Space" -> "Ctrl+Пробел"."""
-    if not accel:
-        return "не задана"
-    parts = []
-    for raw in str(accel).split("+"):
-        token = raw.strip()
-        if not token:
-            continue
-        parts.append(_KEY_LABELS.get(token.lower(), token if len(token) > 1 else token.upper()))
-    return "+".join(parts)
-
-
-# The id the launch-window toggle is registered under. It is not an app, so the
-# trigger callback has to tell it apart from one.
-TOGGLE_LAUNCH = "__centurio_toggle_launch__"
-
-
 class HotkeyManager:
     def __init__(self, on_trigger):
         self.on_trigger = on_trigger
@@ -191,17 +165,6 @@ def quick_accels(apps) -> dict[str, str]:
 
 def quick_bindings(apps) -> list[tuple[str, str]]:
     return [(accel, app_id) for app_id, accel in quick_accels(apps).items()]
-
-
-def free_quick_slot(apps) -> int:
-    """The lowest Ctrl+N nobody answers yet, or 0 when all nine are taken.
-
-    This is what the empty tile in the quick row advertises. It counts
-    accelerators, not cards: sets sit in the same strip but have no hotkey, so
-    they must not push the number along.
-    """
-    taken = {a.split("+")[-1] for a in quick_accels(apps).values()}
-    return next((n for n in range(1, QUICK_SLOTS + 1) if str(n) not in taken), 0)
 
 
 def app_for_accel(apps, accel: str) -> str | None:

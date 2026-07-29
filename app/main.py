@@ -9,12 +9,11 @@ from pathlib import Path
 import flet as ft
 
 from app import autostart, log
-from app import colors as C
 from app.debounce import Debounce
-from app.hotkeys import TOGGLE_LAUNCH, HotkeyManager, app_for_accel, quick_bindings
+from app.hotkeys import HotkeyManager, app_for_accel, quick_bindings
 from app.iconify import ensure_icons
 from app.launcher import Launcher
-from app.store import DEFAULT_LAUNCH_HOTKEY, Store
+from app.store import Store
 from app.tray import TrayController
 from app.ui import CenturioUI
 
@@ -24,22 +23,22 @@ ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 # waits before the geometry is written out.
 GEOMETRY_FLUSH_DELAY = 0.5
 
-# How often the "Проверять новое раз в 15 минут" setting is acted on.
+# How often the "Автообновление списка" setting is acted on, when it is on.
 AUTO_RESCAN_INTERVAL = 900
 
 
-def shutdown(store=None, tray=None, launcher=None, hotkeys=None, geometry_flush=None,
-             toast=None):
+def shutdown(store=None, tray=None, launcher=None, hotkeys=None, geometry_flush=None):
     """Release what the app grabbed, in an order that can't lose data.
 
     The store is flushed first, then the background machinery is told to stop.
     Everything is optional and every step is independently guarded: quitting
-    must not be blocked by a tray icon that has already died.
+    must not be blocked by a tray icon that has already died, and until this
+    existed nothing ever called TrayController.stop() or stop_monitor() at all
+    — shutdown relied entirely on daemon threads and os._exit.
     """
     for label, step in (("flushing the store", getattr(store, "flush", None)),
                         ("cancelling the geometry flush",
                          getattr(geometry_flush, "cancel", None)),
-                        ("stopping the toast timer", getattr(toast, "stop", None)),
                         ("stopping the hotkey listener", getattr(hotkeys, "stop", None)),
                         ("stopping the process monitor",
                          getattr(launcher, "stop_monitor", None)),
@@ -54,16 +53,15 @@ def shutdown(store=None, tray=None, launcher=None, hotkeys=None, geometry_flush=
 
 def main(page: ft.Page):
     store = Store()
-    log.setup(log_dir=Path(store.path).parent,
-              debug=log.is_debug() or bool(store.state()["settings"].get("debug_log")))
+    log.setup(log_dir=Path(store.path).parent)
     log.debug("Centurio starting (argv=%s)", sys.argv)
 
     icon_path = ensure_icons(ASSETS_DIR)
+
     is_web = page.web or os.environ.get("CENTURIO_WEB") == "1"
-    start_hidden = "--hidden" in sys.argv
 
     page.title = "Centurio"
-    page.bgcolor = C.BG_1
+    page.bgcolor = "#0b0b0d"
     page.padding = 0
     page.spacing = 0
     page.theme_mode = ft.ThemeMode.DARK
@@ -74,96 +72,41 @@ def main(page: ft.Page):
         "Inter ExtraBold": "fonts/Inter-ExtraBold.ttf",
         "mono": "fonts/Mono-Regular.ttf",
     }
-    page.theme = ft.Theme(color_scheme_seed=C.ACCENT, font_family="Inter")
-
-    # Starting hidden means the hotkey is what brings the window back, and what
-    # it should bring back is the compact launcher.
-    start_window = "launch" if start_hidden else "library"
-
+    page.theme = ft.Theme(color_scheme_seed="#f5f5f7", font_family="Inter")
     if not is_web:
+        s = store.state()["settings"]
         page.window.title_bar_hidden = True
         page.window.frameless = True
+        page.window.min_width = 940
+        page.window.min_height = 620
+        page.window.width = s.get("win_w") or 1400
+        page.window.height = s.get("win_h") or 880
+        if s.get("win_x") is not None and s.get("win_y") is not None:
+            page.window.left = s["win_x"]
+            page.window.top = s["win_y"]
+        else:
+            page.window.center()
+        if s.get("win_max"):
+            page.window.maximized = True
         page.window.prevent_close = True
 
     launcher = Launcher()
     # Bound further down, but named here so quit_app can close over them and
-    # still be safe if the tray's "Выход" fires before they exist.
+    # still be safe if the tray's "Выход" somehow fires before they exist.
     hotkeys = None
     geometry_flush = None
-    ui_holder = {}
 
     def quit_app():
-        ui = ui_holder.get("ui")
-        shutdown(store=store, tray=tray, launcher=launcher, hotkeys=hotkeys,
-                 geometry_flush=geometry_flush, toast=getattr(ui, "toast", None))
+        shutdown(store=store, tray=tray, launcher=launcher,
+                 hotkeys=hotkeys, geometry_flush=geometry_flush)
         _quit(page)
 
-    def apply_window(window: str):
-        """Size the window for the mode it is about to show."""
-        if is_web:
-            return
-        try:
-            if window == "launch":
-                page.window.maximized = False
-                page.window.resizable = False
-                page.window.min_width = C.LAUNCH_W
-                page.window.min_height = C.LAUNCH_H
-                page.window.width = C.LAUNCH_W
-                page.window.height = C.LAUNCH_H
-                page.window.center()
-            else:
-                s = store.state()["settings"]
-                page.window.resizable = True
-                page.window.min_width = C.LIBRARY_MIN_W
-                page.window.min_height = C.LIBRARY_MIN_H
-                page.window.width = s.get("win_w") or C.LIBRARY_W
-                page.window.height = s.get("win_h") or C.LIBRARY_H
-                if s.get("win_x") is not None and s.get("win_y") is not None:
-                    page.window.left = s["win_x"]
-                    page.window.top = s["win_y"]
-                else:
-                    page.window.center()
-                if s.get("win_max"):
-                    page.window.maximized = True
-            page.update()
-        except Exception:
-            log.exception("resizing the window for %s failed", window)
-
-    def show_window():
-        _show_window(page)
-        ui = ui_holder.get("ui")
-        if ui is not None and ui.view.window == "launch":
-            ui._focus(ui.launch_field)
-
-    def open_launch():
-        ui = ui_holder.get("ui")
-        if ui is None:
-            return
-        if ui.view.window != "launch":
-            ui._open_launch()
-        show_window()
-
-    def open_library():
-        ui = ui_holder.get("ui")
-        if ui is None:
-            return
-        ui._open_library()
-        show_window()
-
-    def toggle_launch():
-        """The global hotkey: show «Запуск», or put it away if it is up."""
-        ui = ui_holder.get("ui")
-        if ui is None:
-            return
-        visible = True if is_web else bool(page.window.visible)
-        if visible and ui.view.window == "launch":
-            hide_to_tray()
-        else:
-            open_launch()
+    tray = TrayController(icon_path, on_show=lambda: _show_window(page), on_quit=quit_app)
+    ui_holder = {}
 
     def minimize():
         if store.state()["settings"].get("minimize_to_tray") and tray.available:
-            hide_to_tray()
+            _hide_window(page)
         else:
             page.window.minimized = True
             page.update()
@@ -174,13 +117,11 @@ def main(page: ft.Page):
 
     def close():
         if store.state()["settings"].get("close_to_tray") and tray.available:
-            hide_to_tray()
+            _hide_window(page)
         else:
             quit_app()
 
     def hide_to_tray():
-        if is_web:
-            return
         if tray.available:
             _hide_window(page)
         else:
@@ -190,62 +131,59 @@ def main(page: ft.Page):
     def on_setting(key, value):
         if key == "autostart":
             autostart.set_autostart(bool(value))
-        elif key == "launch_hotkey":
-            refresh_runtime()
 
-    def on_hotkey(binding_id):
-        if binding_id == TOGGLE_LAUNCH:
-            toggle_launch()
-            return
-        ui = ui_holder.get("ui")
-        if ui is not None:
-            ui._launch(binding_id)
-
-    hotkeys = HotkeyManager(on_trigger=on_hotkey)
+    hotkeys = HotkeyManager(on_trigger=lambda app_id: ui_holder["ui"]._launch(app_id))
 
     def refresh_runtime():
-        state = store.state()
-        launcher.set_apps(state["apps"])
-        tray.refresh()
+        apps = store.state()["apps"]
+        launcher.set_apps(apps)
         if not is_web:
-            bindings = [(state["settings"].get("launch_hotkey") or DEFAULT_LAUNCH_HOTKEY,
-                         TOGGLE_LAUNCH)]
-            bindings += quick_bindings(state["apps"])
-            hotkeys.register(bindings)
+            hotkeys.register(quick_bindings(apps))
 
     controllers = {
         "minimize": minimize, "toggle_maximize": toggle_maximize, "close": close,
         "hide_to_tray": hide_to_tray, "on_setting": on_setting,
-        "on_library_changed": refresh_runtime, "set_window": apply_window,
+        "on_library_changed": refresh_runtime,
     }
 
-    def tray_menu():
-        from app import dialogs
-        items = [(item["label"], (lambda aid=item["id"]: on_hotkey(aid)))
-                 for item in dialogs.tray_items(store)]
-        return items, dialogs.library_summary(store)
-
-    tray = TrayController(icon_path, on_show=open_launch, on_quit=quit_app,
-                          on_open_library=open_library, menu_provider=tray_menu)
-
-    ui = CenturioUI(page, store, launcher, controllers, window=start_window)
+    ui = CenturioUI(page, store, launcher, controllers)
     ui_holder["ui"] = ui
     launcher.on_change = lambda ids: ui.set_running(ids)
 
     def on_key(e: ft.KeyboardEvent):
-        try:
-            ui.handle_key(e)
-        except Exception:
-            log.exception("handling a key press failed")
-        # pynput's listener doesn't swallow the keystroke, so a focused window
-        # sees Ctrl+N as well — handling it here too would launch twice. This is
-        # the fallback for when the combo isn't registered globally.
-        if e.ctrl and (e.key or "").isdigit():
-            accel = f"Ctrl+{e.key}"
+        # The page keeps receiving key events while a modal dialog is up, and
+        # the window behind it acted on every one: arrows moved a selection
+        # nobody could see, Enter launched whatever they landed on.
+        if ui.dialog_open:
+            return
+        key = e.key
+        if e.ctrl and key.lower() == "k":
+            ui.search_field.focus()
+        elif key == "Escape":
+            if ui.query:
+                ui.query = ""
+                ui.search_field.value = ""
+                ui.selected = -1
+                ui.refresh()
+            elif ui.selected >= 0:
+                ui.selected = -1
+                ui.refresh()
+        elif e.ctrl and key.isdigit():
+            # pynput's listener doesn't swallow the keystroke, so a focused
+            # window sees it as well — handling it here too would launch twice.
+            # This branch is the fallback for when the combo isn't registered
+            # globally (no pynput, web mode, a rejected accelerator).
+            accel = f"Ctrl+{key}"
             if not hotkeys.handles(accel):
                 app_id = app_for_accel(store.state()["apps"], accel)
                 if app_id:
                     ui._launch(app_id)
+        elif key in ("Arrow Right", "Arrow Down"):
+            ui.move_selection(1)
+        elif key in ("Arrow Left", "Arrow Up"):
+            ui.move_selection(-1)
+        elif key in ("Enter", "Numpad Enter"):
+            ui.activate_selected()
     page.on_keyboard_event = on_key
 
     def _flush_geometry():
@@ -253,21 +191,10 @@ def main(page: ft.Page):
             store.flush()
         except Exception:
             log.exception("flushing window geometry failed")
-        try:
-            # The toolbar sizes itself against the window, so a resize has to be
-            # followed by a rebuild. It rides the same debounce as the geometry
-            # write: once per drag, not once per frame.
-            ui.refresh()
-        except Exception:
-            log.exception("relaying out after a resize failed")
 
     geometry_flush = Debounce(GEOMETRY_FLUSH_DELAY, _flush_geometry)
 
     def save_window(flush: bool = False):
-        # Only the library's geometry is worth remembering: «Запуск» is always
-        # the same size, in the middle of the screen.
-        if ui.view.window != "library":
-            return
         try:
             w, h = page.window.width, page.window.height
             maximized = page.window.maximized
@@ -291,14 +218,12 @@ def main(page: ft.Page):
             save_window(flush=True)
             close()
     page.window.on_event = on_win_event if not is_web else None
-
-    apply_window(start_window)
     ui.mount()
 
     def _backfill():
         try:
             from app import discovery
-            cache = str(app_paths_dir(store))
+            cache = str(Path(app_paths_dir(store)))
             schema = store.state()["settings"].get("icon_schema", 0)
             refresh = schema < discovery.ICON_SCHEMA
             if discovery.backfill_icons(store, cache, refresh=refresh):
@@ -316,7 +241,7 @@ def main(page: ft.Page):
             time.sleep(AUTO_RESCAN_INTERVAL)
             try:
                 if store.state()["settings"].get("auto_rescan"):
-                    ui.rescan(silent=True)
+                    ui._rescan(silent=True)
             except Exception:
                 log.exception("auto-rescan tick failed")
     threading.Thread(target=_auto_rescan_loop, daemon=True).start()
@@ -332,9 +257,8 @@ def main(page: ft.Page):
             store.set_setting("autostart", effective)
             ui.refresh()
         tray.start()
-        if start_hidden:
+        if "--hidden" in sys.argv:
             _hide_window(page)
-    ui.maybe_onboard()
 
 
 def app_paths_dir(store):
