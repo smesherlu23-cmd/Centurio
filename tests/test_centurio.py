@@ -2754,6 +2754,36 @@ def test_ui_keyboard():
         ui.handle_key(_key("Escape"))
         ok(not ui.view.capture, "Esc cancels the capture")
 
+        # Комбинации, которыми в Windows уже что-то делают, не назначаются
+        # никому — ни программе, ни общему вызову Centurio.
+        ui.view.select_one(ids[2])
+        ui._begin_capture()
+        ui.handle_key(_key("F4", alt=True))
+        ok(store.get_app(ids[2])["hotkey"] is None, "a Windows shortcut is refused")
+        ok(ui.view.capture, "capture stays open so another combination can be tried")
+        ok("Windows" in ui.toast.text.value, "and the toast says why")
+        ui.handle_key(_key("Escape"))
+
+        # Общая комбинация — тот же захват, но по-другому именованная цель:
+        # начинается через _begin_capture("launch"), а не через выбранную плитку.
+        start = store.state()["settings"]["launch_hotkey"]
+        ui._begin_capture("launch")
+        ok(ui.view.capture and ui.view.capture_target == "launch",
+           "the launch hotkey uses the same capture machinery")
+        ui.handle_key(_key("F4", alt=True))
+        ok(store.state()["settings"]["launch_hotkey"] == start,
+           "a Windows shortcut is refused here too")
+        ui.handle_key(_key("Space", ctrl=True, shift=True))
+        ok(store.state()["settings"]["launch_hotkey"] == "Ctrl+Shift+Space",
+           "any other combination the user presses is accepted")
+
+        ui.view.select_one(ids[0])
+        ui._begin_capture()
+        ui.handle_key(_key("Space", ctrl=True, shift=True))
+        ok(store.get_app(ids[0])["hotkey"] == "Ctrl+Shift+G",
+           "a combination already claimed by the launch hotkey is refused for a program")
+        ok("Centurio" in ui.toast.text.value, "and the toast names what already has it")
+
         hidden = []
         ui.controllers["hide_to_tray"] = lambda: hidden.append(1)
         ui.view.close_inspector()
@@ -2798,8 +2828,6 @@ def test_ui_settings_screen():
         skip("UI settings test", exc)
         return
 
-    from app.hotkeys import LAUNCH_HOTKEYS
-
     with tempfile.TemporaryDirectory() as d:
         store = Store(os.path.join(d, "data.json"))
         ui, page = _ui_for(store)
@@ -2818,7 +2846,7 @@ def test_ui_settings_screen():
 
         # Каждая настройка живёт ровно в одном разделе и ничего не свёрнуто.
         expected = {
-            "keys": ("Вызов поиска", "Подсказки клавиш"),
+            "keys": ("Вызов Centurio", "Подсказки клавиш"),
             "startup": ("Запускать с Windows", "Крестик сворачивает в трей",
                         "Прятать окно после запуска"),
             "library": ("Складывать новое в разбор", "Проверять новое раз в 15 минут",
@@ -2838,11 +2866,14 @@ def test_ui_settings_screen():
             ui.set_setting(key, not before)
             ok(store.state()["settings"][key] is (not before), f"«{key}» writes through")
 
+        # Вызов Centurio — свободный захват, а не выбор из готового списка.
+        ui.set_settings_tab("keys")
         start = store.state()["settings"]["launch_hotkey"]
-        ui.cycle_launch_hotkey()
-        ok(store.state()["settings"]["launch_hotkey"] != start, "the combination can change")
-        ok(store.state()["settings"]["launch_hotkey"] in LAUNCH_HOTKEYS,
-           "and only ever becomes one that registers")
+        ui._begin_capture("launch")
+        ui.handle_key(_key("Space", ctrl=True, alt=True))
+        ok(store.state()["settings"]["launch_hotkey"] == "Ctrl+Alt+Space",
+           "the combination becomes whatever was pressed")
+        ok(store.state()["settings"]["launch_hotkey"] != start, "not stuck with the default")
 
         ui.set_settings_tab("library")
         ui.backup()

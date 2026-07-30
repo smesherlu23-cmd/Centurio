@@ -11,7 +11,7 @@ import flet as ft
 from app import autostart, log
 from app import colors as C
 from app.debounce import Debounce
-from app.hotkeys import (TOGGLE_SEARCH, HotkeyManager, app_for_accel, quick_bindings,
+from app.hotkeys import (TOGGLE_LAUNCH, HotkeyManager, app_for_accel, quick_bindings,
                          set_bindings, set_for_accel, split_binding)
 from app.iconify import ensure_icons
 from app.launcher import Launcher
@@ -130,18 +130,16 @@ def main(page: ft.Page):
         if ui is not None:
             ui.open_library()
 
-    def toggle_search():
-        """The global hotkey: raise the window with the palette, or put it away."""
+    def toggle_launch():
+        """The global hotkey: raise the window on the grid, or put it away."""
         ui = ui_holder.get("ui")
         if ui is None:
             return
         visible = True if is_web else bool(page.window.visible)
-        if visible and ui.view.palette_open:
-            ui.view.close_palette()
-            ui.refresh()
+        if visible:
             hide_to_tray()
         else:
-            open_search()
+            open_library()
 
     def minimize():
         if store.state()["settings"].get("minimize_to_tray") and tray.available:
@@ -176,8 +174,8 @@ def main(page: ft.Page):
             refresh_runtime()
 
     def on_hotkey(binding_id):
-        if binding_id == TOGGLE_SEARCH:
-            toggle_search()
+        if binding_id == TOGGLE_LAUNCH:
+            toggle_launch()
             return
         ui = ui_holder.get("ui")
         if ui is None:
@@ -196,7 +194,7 @@ def main(page: ft.Page):
         tray.refresh()
         if not is_web:
             bindings = [(state["settings"].get("launch_hotkey") or DEFAULT_LAUNCH_HOTKEY,
-                         TOGGLE_SEARCH)]
+                         TOGGLE_LAUNCH)]
             bindings += quick_bindings(state["apps"])
             bindings += set_bindings(_ordered_sets(state))
             hotkeys.register(bindings)
