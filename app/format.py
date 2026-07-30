@@ -70,6 +70,24 @@ def time_ago(ms: int) -> str:
     return f"{d} {_plural(d, 'день', 'дня', 'дней')} назад"
 
 
+def short_ago(ms: int) -> str:
+    """The tile's second line: «сегодня», «вчера», «3 дня назад».
+
+    time_ago() is the precise form and stays where precision is worth the
+    width (the inspector's «Последний:»); a tile has one line of 10.5px.
+    """
+    if not ms:
+        return ""
+    diff = time.time() * 1000 - ms
+    hours = int(diff // 3600000)
+    if hours < 24:
+        return "сегодня"
+    days = hours // 24
+    if days == 1:
+        return "вчера"
+    return f"{days} {_plural(days, 'день', 'дня', 'дней')} назад"
+
+
 def _plural(n, one, few, many):
     m10, m100 = n % 10, n % 100
     if m10 == 1 and m100 != 11:
@@ -83,9 +101,13 @@ def plu_apps(n):
     return _plural(n, "приложение", "приложения", "приложений")
 
 
-def plu_cats(n):
-    return _plural(n, "категория", "категории", "категорий")
+def plu_hits(n):
+    return _plural(n, "совпадение", "совпадения", "совпадений")
 
 
 def plu_programs(n):
     return _plural(n, "программа", "программы", "программ")
+
+
+def plu_windows(n):
+    return _plural(n, "окно", "окна", "окон")

@@ -1,7 +1,8 @@
-"""Экраны и поповеры — то, что раньше было модальными окнами.
+"""Экраны, слои и поповеры — то, что раньше было модальными окнами.
 
 Ни один builder здесь не открывает `ft.AlertDialog`. «Найти и добавить»,
-«Настройки» и «Разбор» — экраны внутри окна библиотеки; цвет и иконка
+«Настройки», «Разбор» и набор с раскладкой — экраны внутри единственного окна;
+палитра поиска и панель массовых операций — слои поверх него; цвет и иконка
 категории — поповер у её значка; первый запуск — карточка поверх окна.
 
 Каждая функция принимает объект интерфейса и возвращает контрол; куда его
@@ -12,6 +13,7 @@ from __future__ import annotations
 import flet as ft
 
 from . import colors as C
+from . import layout as L
 from . import queries
 from .format import ICON_PACK, T, cat_icon, plu_apps, plu_programs
 from .hotkeys import format_accel
@@ -284,6 +286,475 @@ def _add_footer(ui):
 
 
 # =========================================================================
+# Палитра поиска · вместо окна «Запуск»
+# =========================================================================
+def build_palette(ui, rows):
+    """Карточка под полем поиска: программы, наборы, действия, подсказки."""
+    children = []
+    app_rows = [r for r in rows if r["kind"] == "app"]
+    set_rows = [r for r in rows if r["kind"] == "set"]
+
+    if app_rows:
+        children.append(_group_head("ПРОГРАММЫ", first=True))
+        children.append(_palette_list([_palette_app_row(ui, r) for r in app_rows]))
+    if set_rows:
+        children.append(_group_head("НАБОРЫ", first=not app_rows))
+        children.append(_palette_list([_palette_set_row(ui, r) for r in set_rows]))
+    if not rows:
+        children.append(_palette_empty(ui))
+
+    actions = queries.palette_actions(ui._palette_app())
+    if actions:
+        children.append(_group_head("ДЕЙСТВИЯ"))
+        children.append(ft.Container(
+            ft.Column([_palette_action_row(ui, a, i) for i, a in enumerate(actions)],
+                      spacing=1, tight=True),
+            padding=ft.padding.only(8, 0, 8, 10)))
+    if ui.setting("hints", True) and not ui.calm():
+        children.append(ft.Container(
+            ft.Row([T("↑↓ выбрать · Enter запустить · Tab к действиям", size=11,
+                      color=C.TEXT_FAINT, expand=True),
+                    T("Esc — к библиотеке", size=11, color=C.TEXT_FAINT)]),
+            padding=ft.padding.symmetric(9, 16), bgcolor=C.PALETTE_FOOT,
+            border=ft.border.only(top=ft.BorderSide(1, C.PALETTE_FOOT_BORDER))))
+
+    return ft.Container(
+        ft.Column(children, spacing=0, tight=True),
+        width=C.PALETTE_W, bgcolor=C.PALETTE_BG,
+        border=ft.border.all(1, C.PALETTE_BORDER), border_radius=14,
+        clip_behavior=ft.ClipBehavior.HARD_EDGE,
+        shadow=ft.BoxShadow(blur_radius=70, offset=ft.Offset(0, 30),
+                            color=C.SHADOW_PALETTE))
+
+
+def _group_head(label, first: bool = False):
+    return ft.Container(_caps(label),
+                        padding=ft.padding.only(16, 12 if first else 14, 16, 6))
+
+
+def _palette_list(rows):
+    return ft.Container(ft.Column(rows, spacing=1, tight=True),
+                        padding=ft.padding.symmetric(0, 8))
+
+
+def _palette_row(ui, index: int, plate, lines, right, on_click, height=48):
+    active = (ui.view.palette_index == index
+              and ui.view.palette_focus == "results")
+    controls = [plate, ft.Column(lines, spacing=1, expand=True, tight=True)]
+    if right is not None:
+        controls.append(right)
+    row = ft.Container(
+        ft.Row(controls, spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        height=height, padding=ft.padding.symmetric(0, 12), border_radius=10,
+        bgcolor=C.PALETTE_ROW if active else None,
+        on_click=lambda e: on_click())
+    # Наведение двигает и выделение: мышь и клавиатура не должны спорить о том,
+    # что запустит Enter.
+    row.on_hover = lambda e, i=index: ui.palette_hover(i, e)
+    return row
+
+
+def _palette_app_row(ui, row):
+    app = row["app"]
+    active = (ui.view.palette_index == row["index"]
+              and ui.view.palette_focus == "results")
+    accel = ui._accels.get(app["id"])
+    right = (ui._key_chip("Enter", bright=True) if active
+             else (T(accel, size=11, color=C.TEXT_FAINT, font_family="monospace")
+                   if accel and not ui.calm() else None))
+    sub = queries.app_palette_sub(row, ui.window_count(app))
+    lines = [T(spans=[
+        ft.TextSpan(text, ft.TextStyle(bgcolor=C.MATCH_BG) if hit else None)
+        for text, hit in queries.match_spans(app["name"], ui.view.query)
+    ], size=14, weight=ft.FontWeight.W_500, color=C.WHITE if active else C.TEXT,
+        max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)]
+    if sub and not ui.calm():
+        lines.append(T(sub, size=11, color=C.MUTED if active else C.MUTED_2,
+                       max_lines=1, overflow=ft.TextOverflow.ELLIPSIS))
+    plate = ui.icon_slot(app, 32, 9, glyph=17,
+                         border=C.SLOT_BORDER_SEL if active else None,
+                         glyph_color=C.SLOT_GLYPH_SEL if active else None)
+    return _palette_row(ui, row["index"], plate, lines, right,
+                        lambda r=row: ui.palette_click(r))
+
+
+def _palette_set_row(ui, row):
+    rec = row["set"]
+    active = (ui.view.palette_index == row["index"]
+              and ui.view.palette_focus == "results")
+    accel = ui._set_accels.get(rec["id"])
+    right = (ui._key_chip("Enter", bright=True) if active
+             else (T(accel, size=11, color=C.TEXT_FAINT, font_family="monospace")
+                   if accel and not ui.calm() else None))
+    lines = [T(rec["name"], size=14, weight=ft.FontWeight.W_500,
+               color=C.WHITE if active else C.TEXT, max_lines=1,
+               overflow=ft.TextOverflow.ELLIPSIS)]
+    if not ui.calm():
+        lines.append(T(queries.set_palette_sub(rec, row["members"]), size=11,
+                       color=C.MUTED if active else C.MUTED_2, max_lines=1,
+                       overflow=ft.TextOverflow.ELLIPSIS))
+    return _palette_row(ui, row["index"], ui.set_slot(32, 9, 16), lines, right,
+                        lambda r=row: ui.palette_click(r))
+
+
+def _palette_action_row(ui, action, index):
+    active = ui.view.palette_focus == "actions" and ui.view.palette_index == index
+    controls = [ft.Container(ft.Icon(action["icon"], size=17, color=C.SLOT_GLYPH),
+                             width=32, alignment=ft.alignment.center),
+                T(action["label"], size=13.5, color=C.WHITE if active else C.TEXT_2,
+                  expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)]
+    if action["hint"] and not ui.calm():
+        controls.append(T(action["hint"], size=11, color=C.TEXT_FAINT,
+                          font_family="monospace"))
+    row = ft.Container(
+        ft.Row(controls, spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        height=40, padding=ft.padding.symmetric(0, 12), border_radius=10,
+        bgcolor=C.PALETTE_ROW if active else None,
+        on_click=lambda e, k=action["key"]: ui.run_palette_action(k))
+    if not active:
+        ui._hoverable(row, None, C.PALETTE_ROW)
+    return row
+
+
+def _palette_empty(ui):
+    return ft.Container(
+        ft.Row([T("Ничего не найдено", size=13.5, color=C.MUTED, expand=True),
+                ui.link_btn("Найти на диске", ui._open_add)],
+               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=ft.padding.only(16, 14, 16, 16))
+
+
+# =========================================================================
+# Плавающая панель массовых операций
+# =========================================================================
+def build_bulk_bar(ui):
+    ids = list(ui.view.sel)
+
+    def action(label, icon, on_click, icon_color=C.TEXT_2, arrow=False, plain=False,
+               color=C.TEXT):
+        row = [ft.Icon(icon, size=15, color=icon_color),
+               T(label, size=12.5, weight=ft.FontWeight.W_500, color=color)]
+        if arrow:
+            row.append(ft.Icon(ft.Icons.KEYBOARD_ARROW_UP, size=14, color=C.SLOT_GLYPH))
+        btn = ft.Container(
+            ft.Row(row, spacing=7, tight=True), height=36,
+            padding=ft.padding.symmetric(0, 12), border_radius=9,
+            bgcolor=None if plain else C.BAR_BTN, alignment=ft.alignment.center,
+            on_click=lambda e: on_click())
+        return ui._hoverable(btn, None if plain else C.BAR_BTN, C.PANEL_ACTIVE)
+
+    def divider():
+        return ft.Container(width=1, height=20, bgcolor=C.LINE_4,
+                            margin=ft.margin.symmetric(0, 4))
+
+    cancel = ft.Container(
+        ft.Row([T("Отмена", size=12.5, weight=ft.FontWeight.W_500, color=C.MUTED),
+                T("" if ui.calm() else "Esc", size=10.5, color=C.MUTED_2,
+                  font_family="monospace")], spacing=7, tight=True),
+        height=36, padding=ft.padding.symmetric(0, 12), border_radius=9,
+        alignment=ft.alignment.center, on_click=lambda e: ui._toggle_select_mode())
+    ui._hoverable(cancel, None, C.BAR_BTN)
+
+    return ft.Container(
+        ft.Row([
+            T(f"Выбрано {len(ids)}", size=13, weight=ft.FontWeight.W_600, color=C.WHITE),
+            divider(),
+            action("Категория", ft.Icons.FOLDER, lambda: ui._bulk_menu("cat"), arrow=True),
+            action("В набор", ft.Icons.LAYERS, lambda: ui._bulk_menu("set"), arrow=True),
+            action("В избранное", ft.Icons.STAR, lambda: ui._bulk_favorite(ids),
+                   icon_color=C.STAR),
+            action("Скрыть", ft.Icons.VISIBILITY_OFF, lambda: ui._hide_apps(ids, True)),
+            action("Убрать", ft.Icons.DELETE_OUTLINE, lambda: ui._remove_apps(ids),
+                   icon_color=C.ERR_TEXT, color=C.ERR_TEXT, plain=True),
+            divider(),
+            cancel,
+        ], spacing=8, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        height=56, bgcolor=C.BAR_BG, border=ft.border.all(1, C.BAR_BORDER),
+        border_radius=14, padding=ft.padding.only(16, 0, 10, 0),
+        shadow=ft.BoxShadow(blur_radius=44, offset=ft.Offset(0, 18), color=C.SHADOW_BAR))
+
+
+# =========================================================================
+# Набор с раскладкой окон
+# =========================================================================
+def build_set_screen(ui, rec):
+    return ft.Container(
+        ft.Column([_set_header(ui, rec),
+                   ft.Row([_layout_column(ui, rec), _order_column(ui, rec)],
+                          spacing=20, vertical_alignment=ft.CrossAxisAlignment.START)],
+                  spacing=20, tight=True),
+        padding=ft.padding.symmetric(22, 26))
+
+
+def _set_header(ui, rec):
+    accel = ui._set_accels.get(rec["id"])
+    name = ft.TextField(
+        value=rec["name"], border=ft.InputBorder.NONE, filled=False, dense=True,
+        text_size=20, color=C.TEXT, cursor_color=C.TEXT,
+        content_padding=ft.padding.symmetric(0, 0),
+        text_style=ft.TextStyle(weight=ft.FontWeight.BOLD, font_family="Inter Bold"),
+        on_blur=lambda e: ui.rename_set(rec["id"], e.control.value),
+        on_submit=lambda e: ui.rename_set(rec["id"], e.control.value))
+    count = len(rec["items"])
+    meta = [T(f"{count} {plu_programs(count)}", size=12, color=C.MUTED_2)]
+    if accel and not ui.calm():
+        meta += [_meta_divider(),
+                 ft.Container(T(accel, size=11.5, color=C.MUTED, font_family="monospace"),
+                              tooltip="Открывает набор из любой программы")]
+    meta += [_meta_divider(),
+             ft.Container(T(f"Монитор {rec['monitor'] + 1}", size=12, color=C.MUTED_2),
+                          tooltip="Куда расставлять окна",
+                          on_click=lambda e: ui._monitor_menu(rec, e))]
+    right = [ui.outline_btn("Снять с текущих окон",
+                            lambda: ui.capture_set_layout(rec["id"]), ft.Icons.SAVE,
+                            height=38),
+             ui.primary_btn("Запустить набор", lambda: ui._launch_set(rec["id"]),
+                            ft.Icons.PLAY_ARROW, height=38)]
+    return ft.Row([
+        ui.set_slot(46, 13, 22),
+        ft.Column([ft.Container(name, height=28),
+                   ft.Row(meta, spacing=12, tight=True,
+                          vertical_alignment=ft.CrossAxisAlignment.CENTER)],
+                  spacing=5, expand=True, tight=True),
+    ] + right, spacing=14, vertical_alignment=ft.CrossAxisAlignment.START)
+
+
+def _meta_divider():
+    return ft.Container(width=1, height=11, bgcolor=C.CONTROL)
+
+
+def _layout_column(ui, rec):
+    head = ft.Row([_caps("РАСКЛАДКА"),
+                   ft.Container(height=1, bgcolor=C.LINE_2, expand=True),
+                   T("" if ui.calm() else "потяните края, чтобы изменить", size=11,
+                     color=C.MUTED_2)],
+                  spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    panel = ft.Container(
+        ft.Column([_canvas(ui, rec), _layout_note(ui, rec)], spacing=10, tight=True),
+        bgcolor=C.BG_0, border=ft.border.all(1, C.SET_BORDER), border_radius=12,
+        padding=ft.padding.all(16))
+    presets = ft.Row([_preset_btn(ui, rec, key) for key in L.PRESETS],
+                     spacing=8, wrap=True, run_spacing=8)
+    return ft.Column([head, panel, presets], spacing=10, tight=True, expand=True)
+
+
+def _canvas_width(ui) -> float:
+    """Сколько пикселей у полотна монитора — из ширины колонки контента.
+
+    Прямоугольники на схеме стоят в долях экрана, а Flet кладёт их в Stack по
+    точным координатам, так что ширину надо знать заранее.
+    """
+    inner = ui._content_width() - 26 * 2 - 20 - C.SET_SIDE_W
+    return max(240.0, inner - 2 - 32 - 2 - 16)
+
+
+def _canvas(ui, rec):
+    conf = rec["layout"]
+    cw, ch = _canvas_width(ui), C.CANVAS_H - 2 - 16
+    children = []
+    for entry in rec["items"]:
+        rect = L.rect_for(entry, conf["preset"], conf["split"], conf["vsplit"])
+        if rect is None:
+            continue
+        app = next((a for a in ui.apps() if a["id"] == entry["app_id"]), None)
+        if app is None:
+            continue
+        x, y, w, h = rect
+        children.append(ft.Container(
+            ft.Column([ft.Row([ui._cat_glyph(ui.cat_of(app), size=15,
+                                             color=C.SLOT_GLYPH_SEL),
+                               T(app["name"], size=12, weight=ft.FontWeight.W_600,
+                                 color=C.TEXT, max_lines=1,
+                                 overflow=ft.TextOverflow.ELLIPSIS, expand=True)],
+                              spacing=7),
+                       T(L.slot_label(conf["preset"], entry.get("slot"), conf["split"])
+                         if entry.get("slot") is not None else "своё место",
+                         size=10.5, color=C.MUTED_2, max_lines=1,
+                         overflow=ft.TextOverflow.ELLIPSIS)],
+                      spacing=6, tight=True),
+            left=x * cw + 4, top=y * ch + 4,
+            width=max(40.0, w * cw - 8), height=max(34.0, h * ch - 8),
+            bgcolor=C.WIN_BG, border=ft.border.all(1.5, C.WIN_BORDER), border_radius=6,
+            padding=ft.padding.all(10), clip_behavior=ft.ClipBehavior.HARD_EDGE))
+    if not children:
+        children.append(ft.Container(
+            T("Ни одна программа не занимает места — выберите пресет ниже", size=11.5,
+              color=C.MUTED_2, text_align=ft.TextAlign.CENTER),
+            left=0, top=ch / 2 - 10, width=cw, alignment=ft.alignment.center))
+    children += _split_handles(ui, rec, cw, ch)
+    return ft.Container(ft.Stack(children, width=cw, height=ch),
+                        height=C.CANVAS_H, bgcolor=C.CANVAS_BG,
+                        border=ft.border.all(1, C.CONTROL), border_radius=8,
+                        padding=ft.padding.all(8))
+
+
+def _split_handles(ui, rec, cw, ch):
+    """Полоски между окнами: их и тянут, чтобы изменить доли."""
+    conf = rec["layout"]
+    if conf["preset"] not in L.SPLIT_PRESETS:
+        return []
+    handles = [_handle(ui, rec, "split", conf["split"] * cw - 4, 0, 8, ch, cw,
+                       ft.MouseCursor.RESIZE_LEFT_RIGHT)]
+    if conf["preset"] in ("6040", "grid4"):
+        left = conf["split"] * cw if conf["preset"] == "6040" else 0
+        width = cw - left
+        handles.append(_handle(ui, rec, "vsplit", left, conf["vsplit"] * ch - 4,
+                               width, 8, ch, ft.MouseCursor.RESIZE_UP_DOWN))
+    return handles
+
+
+def _handle(ui, rec, key, left, top, width, height, span, cursor):
+    moved = {"by": 0.0}
+
+    def on_update(e):
+        moved["by"] += (e.delta_x if key == "split" else e.delta_y) or 0
+
+    def on_end(e):
+        if not moved["by"]:
+            return
+        current = rec["layout"][key]
+        ui.set_layout_split(rec["id"], key,
+                            L.clamp(current + moved["by"] / max(1.0, span),
+                                    L.MIN_SPLIT, L.MAX_SPLIT))
+        moved["by"] = 0.0
+
+    return ft.GestureDetector(
+        ft.Container(width=width, height=height, border_radius=4),
+        left=left, top=top, mouse_cursor=cursor,
+        on_pan_update=on_update, on_pan_end=on_end)
+
+
+def _layout_note(ui, rec):
+    aside = [next((a["name"] for a in ui.apps() if a["id"] == i["app_id"]), "")
+             for i in rec["items"] if i.get("minimized")]
+    aside = [n for n in aside if n]
+    if not aside:
+        return ft.Container(height=0)
+    names = ", ".join(aside)
+    word = "запускается" if len(aside) == 1 else "запускаются"
+    return ft.Row([ft.Icon(ft.Icons.LAYERS_CLEAR, size=15, color=C.MUTED_2),
+                   T(f"{names} {word} свёрнутым, без места в раскладке", size=11.5,
+                     color=C.MUTED, expand=True)],
+                  spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+
+def _preset_btn(ui, rec, key):
+    active = rec["layout"]["preset"] == key
+    row = []
+    if key != "grid4":
+        thumb = ft.Container(width=14, height=11, border_radius=2,
+                             border=ft.border.all(1.5, C.TEXT if active else C.MUTED))
+        if active and key in ("6040", "half"):
+            # Правая граница толще — это и есть показанная пропорция.
+            thumb.border = ft.border.only(
+                left=ft.BorderSide(1.5, C.TEXT), top=ft.BorderSide(1.5, C.TEXT),
+                bottom=ft.BorderSide(1.5, C.TEXT), right=ft.BorderSide(5, C.TEXT))
+        row.append(thumb)
+    row.append(T(L.PRESET_LABELS[key], size=12,
+                 weight=ft.FontWeight.W_500 if active else ft.FontWeight.W_400,
+                 color=C.TEXT if active else C.TEXT_2))
+    btn = ft.Container(
+        ft.Row(row, spacing=6, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        height=32, padding=ft.padding.symmetric(0, 11), border_radius=8,
+        bgcolor=C.PRESET_ACTIVE_BG if active else None,
+        border=ft.border.all(1, C.LINE_5 if active else C.CONTROL),
+        alignment=ft.alignment.center,
+        on_click=lambda e: ui.set_layout_preset(rec["id"], key))
+    return btn if active else ui._hoverable(btn, None, C.SELECTED_BG)
+
+
+def _order_column(ui, rec):
+    head = ft.Row([_caps("ПОРЯДОК ЗАПУСКА"),
+                   ft.Container(height=1, bgcolor=C.LINE_2, expand=True)],
+                  spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    rows = [_order_row(ui, rec, entry) for entry in rec["items"]]
+    rows.append(ft.Container(
+        ft.Row([ft.Icon(ft.Icons.ADD, size=15, color=C.MUTED_2),
+                T("Добавить программу", size=12.5, color=C.MUTED)],
+               spacing=7, tight=True, alignment=ft.MainAxisAlignment.CENTER),
+        height=44, border_radius=11, border=ft.border.all(1, C.LINE_4),
+        alignment=ft.alignment.center,
+        on_click=lambda e: ui.add_to_set_picker(rec["id"], e)))
+
+    settings = [
+        ft.Container(height=1, bgcolor=C.LINE_2, margin=ft.margin.only(top=4)),
+        _set_option(ui, "Пауза между запусками",
+                    "тяжёлые программы успевают открыться",
+                    ft.Container(T(f"{rec['delay_seconds']:g} с", size=11.5, color=C.TEXT,
+                                   font_family="monospace"),
+                                 height=30, padding=ft.padding.symmetric(0, 10),
+                                 bgcolor=C.PANEL, border=ft.border.all(1, C.CONTROL),
+                                 border_radius=8, alignment=ft.alignment.center,
+                                 tooltip="Другая пауза",
+                                 on_click=lambda e: ui._delay_menu(rec, e))),
+        _set_option(ui, "Закрывать набор целиком",
+                    "в меню набора появится «Закрыть набор»",
+                    ui._toggle(rec["close_together"],
+                               lambda v: ui.set_close_together(rec["id"], v))),
+    ]
+    return ft.Container(
+        ft.Column([head, ft.Column(rows, spacing=6, tight=True)] + settings,
+                  spacing=10, tight=True),
+        width=C.SET_SIDE_W)
+
+
+def _set_option(ui, title, sub, control):
+    left = [T(title, size=12.5, color=C.TEXT_2)]
+    if sub and not ui.calm():
+        left.append(T(sub, size=10.5, color=C.MUTED_2))
+    return ft.Row([ft.Column(left, spacing=1, tight=True, expand=True), control],
+                  spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+
+def _order_row(ui, rec, entry):
+    """Строка «ПОРЯДКА ЗАПУСКА»: её можно перетащить, и это меняет порядок.
+
+    Порядок здесь — это порядок запуска программ, а не украшение, поэтому ручка
+    `drag_indicator` действительно тянется: строка одновременно и груз, и цель.
+    """
+    app = next((a for a in ui.apps() if a["id"] == entry["app_id"]), None)
+    if app is None:
+        return ft.Container(height=0)
+    conf = rec["layout"]
+    muted = bool(entry.get("minimized")) or entry.get("slot") is None
+    place = ("свёрнутым" if entry.get("minimized")
+             else L.slot_label(conf["preset"], entry.get("slot"), conf["split"])
+             or "без места")
+    row = ft.Container(
+        ft.Row([
+            ft.Icon(ft.Icons.DRAG_INDICATOR, size=16, color=C.TEXT_FAINT),
+            ui.icon_slot(app, 30, 9, glyph=16,
+                         bgcolor=C.SET_SLOT_BG if muted else None,
+                         border=C.SET_SLOT_BORDER if muted else None,
+                         glyph_color=C.TEXT_FAINT if muted else None),
+            ft.Column([T(app["name"], size=12.5, weight=ft.FontWeight.W_500,
+                         color=C.TEXT_2 if muted else C.TEXT, max_lines=1,
+                         overflow=ft.TextOverflow.ELLIPSIS),
+                       T(place, size=10.5, color=C.MUTED_2, max_lines=1,
+                         overflow=ft.TextOverflow.ELLIPSIS)],
+                      spacing=1, expand=True, tight=True),
+            ft.Container(ft.Icon(ft.Icons.MORE_HORIZ, size=16, color=C.TEXT_FAINT),
+                         width=24, height=24, alignment=ft.alignment.center,
+                         tooltip="Меню",
+                         on_click=lambda e, en=entry: ui._set_item_menu(rec, en, e)),
+        ], spacing=11, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        height=52, padding=ft.padding.symmetric(0, 12), border_radius=11,
+        bgcolor=C.SET_BG if muted else C.PANEL,
+        border=ft.border.all(1, C.DASHED if muted else C.LINE))
+    ui._hoverable(row, C.SET_BG if muted else C.PANEL, C.SELECTED_BG)
+    tapper = ft.GestureDetector(
+        row, on_secondary_tap_down=lambda e, en=entry: ui._set_item_menu(rec, en, e))
+    group = f"setitem:{rec['id']}"
+    rest = C.DASHED if muted else C.LINE
+    return ft.DragTarget(
+        group=group,
+        content=ft.Draggable(group=group, content=tapper, data=entry["app_id"]),
+        on_accept=lambda e, r=row: ui.drop_set_item(rec["id"], entry["app_id"], e, r, rest),
+        on_will_accept=lambda e, r=row: ui._highlight_drop(r, True, rest),
+        on_leave=lambda e, r=row: ui._highlight_drop(r, False, rest))
+
+
+# =========================================================================
 # 06–07 · Разбор
 # =========================================================================
 def build_triage_screen(ui):
@@ -530,14 +1001,15 @@ def build_category_popover(ui, cat):
 # =========================================================================
 def build_settings_screen(ui):
     rows = [
-        _row(ui, "Вызов окна", "Работает из любой программы",
+        _row(ui, "Вызов поиска", "Поднимает окно из любой программы",
              ft.Container(T(format_accel(ui.setting("launch_hotkey")), size=11.5,
                             color=C.TEXT, font_family="monospace"),
                           height=32, padding=ft.padding.symmetric(0, 12), bgcolor=C.PANEL,
                           border=ft.border.all(1, C.TOAST_BORDER), border_radius=8,
                           alignment=ft.alignment.center, tooltip="Другая комбинация",
                           on_click=lambda e: ui.cycle_launch_hotkey())),
-        _switch(ui, "Прятать окно после запуска", "Открыл — запустил — окно ушло", "hide_after"),
+        _switch(ui, "Прятать окно после запуска", "Нашёл в поиске — запустил — окно ушло",
+                "hide_after"),
         _switch(ui, "Запускать с Windows", "Свёрнутым в трей", "autostart"),
         _switch(ui, "Крестик сворачивает в трей", "Иначе Centurio завершается", "close_to_tray"),
         _switch(ui, "Складывать новое в разбор",
@@ -615,7 +1087,7 @@ def _rare_block(ui):
                 "game_posters"),
         _switch(ui, "Показывать «Быстрый запуск»", "Лента карточек сверху", "show_quick_row"),
         _switch(ui, "Проверять новое раз в 15 минут", "Тихо, в фоне", "auto_rescan"),
-        _switch(ui, "Подсказки клавиш", "Строка снизу в режиме «Запуск»", "hints"),
+        _switch(ui, "Подсказки клавиш", "Строка снизу в палитре поиска", "hints"),
         _row(ui, "Кэш иконок", None,
              ft.Row([T(cache_label, size=11, color=C.MUTED_2, font_family="monospace"),
                      ui.link_btn("Очистить", ui.clear_icon_cache)], spacing=10, tight=True)),
@@ -721,4 +1193,5 @@ def library_summary(store) -> str:
 
 
 __all__ = ["build_add_screen", "build_triage_screen", "build_category_popover",
-           "build_settings_screen", "build_onboarding", "tray_items", "library_summary"]
+           "build_settings_screen", "build_onboarding", "build_palette",
+           "build_bulk_bar", "build_set_screen", "tray_items", "library_summary"]

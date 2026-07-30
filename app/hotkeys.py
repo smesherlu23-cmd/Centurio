@@ -32,8 +32,9 @@ def to_pynput(accel: str) -> str:
     return "+".join(out)
 
 
-# Combinations offered for showing and hiding "Запуск". Anything here has to
-# survive to_pynput() and be unlikely to collide with a program's own shortcut.
+# Combinations offered for raising the window with the search palette open.
+# Anything here has to survive to_pynput() and be unlikely to collide with a
+# program's own shortcut.
 LAUNCH_HOTKEYS = ("Ctrl+Space", "Alt+Space", "Ctrl+Shift+Space", "Ctrl+Alt+Space")
 
 _KEY_LABELS = {"space": "Пробел", "enter": "Ввод", "esc": "Esc", "escape": "Esc",
@@ -53,9 +54,13 @@ def format_accel(accel: str | None) -> str:
     return "+".join(parts)
 
 
-# The id the launch-window toggle is registered under. It is not an app, so the
-# trigger callback has to tell it apart from one.
-TOGGLE_LAUNCH = "__centurio_toggle_launch__"
+# The id the "raise the window and search" toggle is registered under. It is not
+# an app, so the trigger callback has to tell it apart from one.
+TOGGLE_SEARCH = "__centurio_toggle_search__"
+
+# Наборы живут в том же списке привязок, что и приложения, а id и там и там —
+# uuid. Различает их этот префикс.
+SET_PREFIX = "set:"
 
 
 class HotkeyManager:
@@ -210,3 +215,51 @@ def app_for_accel(apps, accel: str) -> str | None:
     if not want:
         return None
     return next((aid for aid, ac in quick_accels(apps).items() if ac.lower() == want), None)
+
+
+def set_accels(sets) -> dict[str, str]:
+    """Map set id -> accelerator. Ctrl+Alt+1…9, the same rules as Ctrl+N.
+
+    Sets sit on a different row of the keyboard than pinned programs on purpose:
+    a number in the quick strip means Ctrl+N and only ever launches the program
+    it is written on.
+    """
+    accels: dict[str, str] = {}
+    used: set[str] = set()
+    for rec in sets:
+        hk = (rec.get("hotkey") or "").strip()
+        if hk:
+            accels[rec["id"]] = hk
+            used.add(hk.lower())
+    slot = 1
+    for rec in sets:
+        if rec["id"] in accels:
+            continue
+        while slot <= QUICK_SLOTS and f"ctrl+alt+{slot}" in used:
+            slot += 1
+        if slot > QUICK_SLOTS:
+            break
+        accel = f"Ctrl+Alt+{slot}"
+        accels[rec["id"]] = accel
+        used.add(accel.lower())
+        slot += 1
+    return accels
+
+
+def set_bindings(sets) -> list[tuple[str, str]]:
+    return [(accel, SET_PREFIX + set_id) for set_id, accel in set_accels(sets).items()]
+
+
+def set_for_accel(sets, accel: str) -> str | None:
+    """Reverse lookup: which set does this accelerator launch, if any."""
+    want = (accel or "").strip().lower()
+    if not want:
+        return None
+    return next((sid for sid, ac in set_accels(sets).items() if ac.lower() == want), None)
+
+
+def split_binding(binding_id: str) -> tuple[str, str]:
+    """("set", id) or ("app", id) — which kind of thing a trigger points at."""
+    if (binding_id or "").startswith(SET_PREFIX):
+        return "set", binding_id[len(SET_PREFIX):]
+    return "app", binding_id

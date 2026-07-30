@@ -47,11 +47,14 @@ def valid_filter(f: str, categories: list[dict]) -> str:
     return f or "all"
 
 
-def matches(app: dict, query: str) -> bool:
-    q = (query or "").strip().lower()
-    if not q:
-        return True
-    return q in app["name"].lower() or q in (app.get("sub") or "").lower()
+def visible(apps: list[dict]) -> list[dict]:
+    """Everything except what «Скрыть» put away.
+
+    Hidden entries stay in the library — they keep their hotkey, their category
+    and their history — they just don't take up room in the grid. The «Скрытые»
+    view is the one place they show up, so the flag is never a one-way door.
+    """
+    return [a for a in apps if not a.get("hidden")]
 
 
 def sort_apps(apps: list[dict], sort: str) -> list[dict]:
@@ -77,36 +80,41 @@ def quick_apps(apps: list[dict]) -> list[dict]:
 
 
 def build_sections(apps: list[dict], categories: list[dict], view: str,
-                   query: str, sort: str, running: set) -> list[dict]:
-    visible = [a for a in apps if matches(a, query)]
-    q = (query or "").strip()
-    if q:
-        return [{"name": "Результаты поиска", "apps": sort_apps(visible, sort),
+                   sort: str, running: set) -> list[dict]:
+    """Секции сетки для активного раздела.
+
+    Поиска здесь больше нет: он живёт в палитре поверх библиотеки, и сетка под
+    ней намеренно не перестраивается — иначе теряется то, на что смотрели.
+    """
+    if view == "hidden":
+        return [{"name": "Скрытые",
+                 "apps": sort_apps([a for a in apps if a.get("hidden")], sort),
                  "editable": False, "cid": None}]
+    shown = visible(apps)
     if view == "favorites":
         return [{"name": "Избранное",
-                 "apps": sort_apps([a for a in visible if a.get("favorite")], sort),
+                 "apps": sort_apps([a for a in shown if a.get("favorite")], sort),
                  "editable": False, "cid": None}]
     if view == "recent":
-        return [{"name": "Недавние", "apps": recent_apps(visible),
+        return [{"name": "Недавние", "apps": recent_apps(shown),
                  "editable": False, "cid": None}]
     if view == "running":
         return [{"name": "Запущено",
-                 "apps": sort_apps([a for a in visible if a["id"] in running], sort),
+                 "apps": sort_apps([a for a in shown if a["id"] in running], sort),
                  "editable": False, "cid": None}]
     if view.startswith("category:"):
         cid = view.split(":", 1)[1]
         cat = next((c for c in categories if c["id"] == cid), None)
         return [{"name": cat["name"] if cat else "Категория",
-                 "apps": sort_apps([a for a in visible if a.get("category_id") == cid], sort),
+                 "apps": sort_apps([a for a in shown if a.get("category_id") == cid], sort),
                  "editable": bool(cat), "cid": cid}]
     sections = []
     known = set()
     for cat in categories:
         known.add(cat["id"])
         sections.append({"name": cat["name"], "cid": cat["id"], "editable": True,
-                         "apps": sort_apps([a for a in visible if a.get("category_id") == cat["id"]], sort)})
-    orphan = sort_apps([a for a in visible if a.get("category_id") not in known], sort)
+                         "apps": sort_apps([a for a in shown if a.get("category_id") == cat["id"]], sort)})
+    orphan = sort_apps([a for a in shown if a.get("category_id") not in known], sort)
     if orphan:
         sections.append({"name": "Без категории", "apps": orphan, "editable": False, "cid": None})
     return [s for s in sections if s["apps"]]
@@ -116,24 +124,32 @@ def flatten_sections(sections: list[dict]) -> list[dict]:
     return [a for sec in sections for a in sec["apps"]]
 
 
-def current_title(view: str, query: str, categories: list[dict]) -> str:
-    if query:
-        return "Поиск"
-    return {"all": "Все приложения", "favorites": "Избранное", "recent": "Недавние",
-            "running": "Запущено", "sets": "Наборы"}.get(view) or (
-        next((c["name"] for c in categories if view == f"category:{c['id']}"), "Все приложения"))
+def current_title(view: str, categories: list[dict]) -> str:
+    """The sidebar's heading: the name of the active rail section.
+
+    It used to say «Поиск» while a query was typed; searching is a palette over
+    the library now, and the library keeps saying which section it is showing.
+    """
+    return {"all": "Все программы", "favorites": "Избранное", "recent": "Недавние",
+            "running": "Запущено", "hidden": "Скрытые"}.get(view) or (
+        next((c["name"] for c in categories if view == f"category:{c['id']}"), "Все программы"))
 
 
-# ---- «Запуск» ----
-def launch_rows(apps: list[dict], query: str, running: set,
-                categories: list[dict], recent_limit: int = 8) -> list[dict]:
-    """The list under the search box: matches, or what is open plus what was.
+# ---- Палитра поиска ----
+# Она заменила окно «Запуск»: ранжирование и подписи те же, изменилась только
+# рамка, в которой это показывают.
+PALETTE_LIMIT = 8
 
-    The design dropped the «СЕЙЧАС ОТКРЫТО»/«ПОСЛЕДНЕЕ» headers, so this is one
-    flat list — running first, then recent — and every row carries the note
-    that used to be implied by the header it sat under.
+
+def search_rows(apps: list[dict], query: str, running: set,
+                categories: list[dict], recent_limit: int = PALETTE_LIMIT) -> list[dict]:
+    """Programs for the palette: matches, or what is open plus what was.
+
+    One flat list — running first, then recent — and every row carries the note
+    that used to be implied by a caps header above it.
     """
     names = {c["id"]: c["name"] for c in categories}
+    pool = visible(apps)
     out: list[dict] = []
 
     def add(app, note):
@@ -142,7 +158,7 @@ def launch_rows(apps: list[dict], query: str, running: set,
 
     q = (query or "").strip().lower()
     if q:
-        hits = [a for a in apps
+        hits = [a for a in pool
                 if q in a["name"].lower()
                 or q in (a.get("sub") or "").lower()
                 or q in names.get(a.get("category_id"), "").lower()]
@@ -153,11 +169,85 @@ def launch_rows(apps: list[dict], query: str, running: set,
             add(app, "открыто" if app["id"] in running else "")
         return out
 
-    for app in sorted([a for a in apps if a["id"] in running], key=lambda a: a["name"].lower()):
+    for app in sorted([a for a in pool if a["id"] in running], key=lambda a: a["name"].lower()):
         add(app, "открыто")
-    for app in [a for a in recent_apps(apps) if a["id"] not in running][:recent_limit]:
+    for app in [a for a in recent_apps(pool) if a["id"] not in running][:recent_limit]:
         add(app, "")
+    if not out:
+        # Ничего не запущено и ничего ещё не запускали — первое Ctrl+Пробел не
+        # должно открывать пустую палитру. Тогда предлагаются закреплённые, а за
+        # ними просто библиотека по алфавиту.
+        pinned = quick_apps(pool)
+        rest = sorted((a for a in pool if not a.get("quick")),
+                      key=lambda a: a["name"].lower())
+        for app in (pinned + rest)[:recent_limit]:
+            add(app, "")
     return out
+
+
+def set_rows(sets: list[dict], apps: list[dict], query: str) -> list[dict]:
+    """Sets for the palette, matched by their own name or a member's."""
+    q = (query or "").strip().lower()
+    names = {a["id"]: a["name"] for a in apps}
+    out = []
+    for rec in sets:
+        members = [names[i] for i in rec.get("apps", []) if i in names]
+        if q and q not in rec["name"].lower() and not any(q in m.lower() for m in members):
+            continue
+        out.append({"set": rec, "members": members})
+    return out
+
+
+def has_layout(rec: dict) -> bool:
+    """True when the set places at least one window somewhere."""
+    return any(i.get("slot") is not None or i.get("rect") for i in rec.get("items", []))
+
+
+def set_summary(rec: dict) -> str:
+    """The sidebar's second line: «4 программы · раскладка»."""
+    from .format import plu_programs
+    count = len(rec.get("items", []))
+    text = f"{count} {plu_programs(count)}"
+    return f"{text} · раскладка" if has_layout(rec) else text
+
+
+def set_palette_sub(rec: dict, members: list[str]) -> str:
+    """«4 программы, включая 1С · с раскладкой»."""
+    from .format import plu_programs
+    count = len(members)
+    text = f"{count} {plu_programs(count)}"
+    if members:
+        text += f", включая {members[0]}"
+    return f"{text} · с раскладкой" if has_layout(rec) else text
+
+
+def app_palette_sub(row: dict, windows: int = 0) -> str:
+    """«Работа», «Работа · открыто, 2 окна», «Работа · 3 дня назад»."""
+    from .format import plu_windows, short_ago
+    parts = [row["cat"]] if row["cat"] else []
+    if row["note"] == "открыто":
+        parts.append(f"открыто, {windows} {plu_windows(windows)}" if windows > 1 else "открыто")
+    else:
+        ago = short_ago(row["app"].get("last_launched"))
+        if ago:
+            parts.append(ago)
+    return " · ".join(parts)
+
+
+# Строки группы «ДЕЙСТВИЯ»: относятся к выделенной программе и пересчитываются
+# при смене выделения. hint — то, что написано справа.
+PALETTE_ACTIONS = (
+    {"key": "folder", "icon": "folder_open", "label": "Открыть папку программы", "hint": ""},
+    {"key": "admin", "icon": "shield", "label": "Запустить от имени администратора",
+     "hint": "Ctrl+Enter"},
+    {"key": "set", "icon": "playlist_add", "label": "Добавить в набор…", "hint": ""},
+)
+
+
+def palette_actions(app: dict | None) -> list[dict]:
+    if app is None:
+        return []
+    return [dict(a) for a in PALETTE_ACTIONS]
 
 
 def match_spans(name: str, query: str) -> list[tuple[str, bool]]:

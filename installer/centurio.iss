@@ -7,7 +7,7 @@
 ; Output:        installer\Output\CenturioSetup.exe
 
 #define MyAppName "Centurio"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.3.0"
 #define MyAppPublisher "Centurio"
 #define MyAppExeName "Centurio.exe"
 ; flet build windows output directory (relative to this script's parent):

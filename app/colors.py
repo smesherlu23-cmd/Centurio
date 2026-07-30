@@ -26,6 +26,9 @@ STAR = "#f5c518"
 # Имена ниже — из спецификации; старые константы выше остались как были, потому
 # что раскладка библиотеки не менялась и продолжает ими пользоваться.
 
+CONTROL = "#23232b"          # граница поля, кнопки, контрола — самый частый штрих
+RAIL_BTN_BG = "#101014"      # круглая кнопка рельсы
+
 ACCENT = "#f5f5f7"           # главная кнопка, бейдж разбора, активный переключатель
 ON_ACCENT = "#0b0b0d"        # текст и глиф на акценте
 WHITE = "#ffffff"            # глиф категории на цветной кнопке рельса
@@ -73,6 +76,30 @@ SET_SLOT_BG = "#131318"
 SET_SLOT_BORDER = "#202028"
 DASHED = "#1f1f27"           # пустое место в ленте
 
+# Палитра поиска — то, чем заменилось окно «Запуск».
+PALETTE_BG = "#101015"
+PALETTE_BORDER = "#2a2a33"
+PALETTE_FOOT = "#0c0c10"
+PALETTE_FOOT_BORDER = "#1c1c23"
+PALETTE_ROW = "#1c1c23"       # выделенная строка
+SCRIM_BODY = "#05050799"      # затемнение тела под палитрой
+SHADOW_PALETTE = "#000000cc"  # 0 30px 70px rgba(0,0,0,.8)
+FIELD_ACTIVE_BG = "#15151c"
+FIELD_ACTIVE_BORDER = "#4a4f58"
+
+# Плавающая панель массовых операций.
+BAR_BG = "#16161d"
+BAR_BORDER = "#33333a"
+BAR_BTN = "#1f1f27"
+SHADOW_BAR = "#000000a6"      # 0 18px 44px rgba(0,0,0,.65)
+
+# Схема раскладки окон в наборе.
+CANVAS_BG = "#0e0e12"
+PRESET_ACTIVE_BG = "#16161c"   # выбранный пресет раскладки
+WIN_BG = "#15151d"
+WIN_BORDER = "#2c2c36"
+WIN_BORDER_ACTIVE = "#3a3a44"
+
 # Разбор
 TRIAGE_SLOT_BORDER = "#2a2a33"
 TRIAGE_PICK_BG = "#141418"
@@ -88,34 +115,39 @@ SHADOW_MENU = "#000000b3"    # 0 24px 60px rgba(0,0,0,0.7)
 SHADOW_TOAST = "#00000099"   # 0 20px 50px rgba(0,0,0,0.6)
 
 # Единственные цвета, которыми может быть категория. Три RGB-ползунка позволяли
-# выбрать в том числе цвет, неразличимый на #08080a.
+# выбрать в том числе цвет, неразличимый на #08080a. Четыре последних — цвета
+# категорий по умолчанию из макета.
 CAT_PALETTE = ("#e6e6e8", "#f5c518", "#f0a020", "#e34f4f",
-               "#b06cf0", "#4f7dff", "#3ecfaf", "#7a8290")
+               "#b06cf0", "#4f7dff", "#3ecfaf", "#7a8290",
+               "#b98cff", "#ff9f6e")
 ACCENT_CHOICES = ("#f5f5f7", "#4f7dff", "#3ecfaf", "#f0a020")
 
 TILE_GRADIENT = ("#191920", "#111116")
+TILE_GRADIENT_SEL = ("#1d1d26", "#141419")
 POSTER_SCRIM = ("#00000000", "#000000e8")
 HUE_STRIP = ("#e34f4f", "#f0a020", "#f5c518", "#4ade80",
              "#3ecfaf", "#4f7dff", "#b06cf0", "#e34f4f")
 
 # ---- Размеры ----
-RAIL_W = 76
-RAIL_BTN = 44
-SIDEBAR_W = 236
-INSPECTOR_W = 320
-TILE_W = 186
-TILE_W_COMPACT = 152
-TILE_COVER_H = 116
-TILE_COVER_H_COMPACT = 96
-TILE_SLOT = 60
-TILE_SLOT_COMPACT = 48
-QUICK_W = 152
-POSTER_W = 150
-POSTER_H = 225
-POSTER_W_COMPACT = 124
-POSTER_H_COMPACT = 186
-LAUNCH_W = 720
-LAUNCH_H = 520
+HEADER_H = 52
+RAIL_W = 72
+RAIL_BTN = 42
+SIDEBAR_W = 232
+INSPECTOR_W = 300
+SEARCH_W = 560
+SEARCH_MIN_W = 220
+PALETTE_W = 640
+TILE_W = 164
+TILE_W_COMPACT = 140
+TILE_COVER_H = 90
+TILE_COVER_H_COMPACT = 78
+TILE_SLOT = 50
+TILE_SLOT_COMPACT = 42
+QUICK_W = 132
+POSTER_W = 132
+POSTER_H = 198
+POSTER_W_COMPACT = 112
+POSTER_H_COMPACT = 168
 LIBRARY_W = 1400
 LIBRARY_H = 880
 LIBRARY_MIN_W = 940
@@ -124,10 +156,18 @@ MENU_W = 300
 POPOVER_W = 330
 TOAST_MIN_W = 360
 TOAST_MAX_W = 520
+SET_SIDE_W = 300      # колонка «Порядок запуска» на экране набора
+CANVAS_H = 280        # полотно монитора на схеме раскладки
+
+# Ниже этой ширины окна инспектор ложится поверх контента, а не рядом с ним;
+# ниже второй — боковая панель уходит совсем, остаётся рельса.
+NARROW_INSPECTOR = 1200
+NARROW_SIDEBAR = 1000
 
 # ---- Анимация ----
 ANIM_FAST = 120
-ANIM_HOVER = 100
+ANIM_HOVER = 80
+ANIM_BAR = 140
 
 
 def _hex(rgb) -> str:
