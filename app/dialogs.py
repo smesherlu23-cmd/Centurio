@@ -478,12 +478,15 @@ def build_bulk_bar(ui):
 # Набор с раскладкой окон
 # =========================================================================
 def build_set_screen(ui, rec):
-    return ft.Container(
+    # Экран занимает всю высоту и катает себя сам: в узком окне схема с
+    # пресетами и порядком запуска не должна обрезаться.
+    return ft.Column([ft.Container(
         ft.Column([_set_header(ui, rec),
                    ft.Row([_layout_column(ui, rec), _order_column(ui, rec)],
                           spacing=20, vertical_alignment=ft.CrossAxisAlignment.START)],
                   spacing=20, tight=True),
-        padding=ft.padding.symmetric(22, 26))
+        padding=ft.padding.symmetric(22, 26))],
+        spacing=0, expand=True, scroll=ft.ScrollMode.AUTO)
 
 
 def _set_header(ui, rec):
@@ -653,12 +656,14 @@ def _preset_btn(ui, rec, key):
     row.append(T(L.PRESET_LABELS[key], size=12,
                  weight=ft.FontWeight.W_500 if active else ft.FontWeight.W_400,
                  color=C.TEXT if active else C.TEXT_2))
+    # Без `alignment`: контейнер без своей ширины и с выравниванием растягивается
+    # на всю строку переносящегося Row — четыре пресета вставали столбиком во всю
+    # ширину вместо ряда чипов. Внутренний Row с tight=True и так по содержимому.
     btn = ft.Container(
         ft.Row(row, spacing=6, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         height=32, padding=ft.padding.symmetric(0, 11), border_radius=8,
         bgcolor=C.PRESET_ACTIVE_BG if active else None,
         border=ft.border.all(1, C.LINE_5 if active else C.CONTROL),
-        alignment=ft.alignment.center,
         on_click=lambda e: ui.set_layout_preset(rec["id"], key))
     return btn if active else ui._hoverable(btn, None, C.SELECTED_BG)
 
@@ -887,8 +892,10 @@ def build_category_popover(ui, cat):
                      on_click=lambda e: ui.close_popover()),
     ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
+    # 24+6 вместо 28+8: с десятью цветами (четыре из них — цвета категорий по
+    # умолчанию) ряд иначе переносится и последние два висят отдельной строкой.
     swatches = [ft.Container(
-        width=28, height=28, border_radius=8, bgcolor=hexval,
+        width=24, height=24, border_radius=7, bgcolor=hexval,
         border=ft.border.all(2, C.ACCENT) if hexval.lower() == color.lower() else None,
         tooltip=hexval.upper(),
         on_click=lambda e, h=hexval: ui.set_category_color(cat["id"], h))
@@ -944,8 +951,7 @@ def build_category_popover(ui, cat):
     image_row = ft.Container(
         ft.Row([ft.Icon(ft.Icons.IMAGE, size=17, color=C.MUTED),
                 ft.Column([T("Своя картинка", size=12.5, color=C.TEXT_2),
-                           T("PNG или SVG" if cat.get("image") else
-                             "PNG или SVG, кнопкой «Выбрать»", size=10.5, color=C.TEXT_DIM)],
+                           T("PNG или SVG", size=10.5, color=C.TEXT_DIM)],
                           spacing=1, expand=True, tight=True),
                 ft.Container(T("Убрать" if cat.get("image") else "Выбрать", size=11.5,
                                color=C.TEXT),
@@ -974,7 +980,7 @@ def build_category_popover(ui, cat):
         ft.Column([
             header,
             _caps("ЦВЕТ"),
-            ft.Row(swatches, spacing=8, wrap=True, run_spacing=8),
+            ft.Row(swatches, spacing=6, wrap=True, run_spacing=6),
             ft.Row([hex_box, sliders], spacing=10,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=1, bgcolor=C.LINE_2, margin=ft.margin.symmetric(10, 0)),

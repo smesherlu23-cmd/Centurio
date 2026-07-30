@@ -122,10 +122,13 @@ class CenturioUI:
         self.inspector_container = ft.Container(width=C.INSPECTOR_W, bgcolor=C.BG_2,
                                                 visible=False)
         # Ниже 1200px инспектор ложится поверх контента: тот же контрол, другое
-        # место в дереве.
-        self.inspector_overlay = ft.Container(width=C.INSPECTOR_W, bgcolor=C.BG_2,
-                                              right=0, top=C.HEADER_H, bottom=0,
-                                              visible=False)
+        # место в дереве. Тень — чтобы он читался как лежащий сверху, а не как
+        # обрезанная сетка.
+        self.inspector_overlay = ft.Container(
+            width=C.INSPECTOR_W, bgcolor=C.BG_2, right=0, top=C.HEADER_H, bottom=0,
+            visible=False,
+            shadow=ft.BoxShadow(blur_radius=40, offset=ft.Offset(-10, 0),
+                                color=C.SHADOW_BAR))
         self.library_body = ft.Container(expand=True)
         self.body = ft.Container(left=0, top=0, right=0, bottom=0)
 
@@ -136,9 +139,10 @@ class CenturioUI:
             opacity=0, offset=ft.Offset(0, -0.02),
             animate_opacity=ft.Animation(C.ANIM_FAST, ft.AnimationCurve.EASE_OUT),
             animate_offset=ft.Animation(C.ANIM_FAST, ft.AnimationCurve.EASE_OUT))
+        # Затемнение не анимируется: прозрачность уже в цвете, а AnimatedOpacity
+        # на слое, который только что стал видимым, гасил его совсем.
         self.palette_scrim = ft.Container(
-            left=0, top=C.HEADER_H, right=0, bottom=0, bgcolor=C.SCRIM_BODY, opacity=0,
-            animate_opacity=ft.Animation(C.ANIM_FAST, ft.AnimationCurve.EASE_OUT),
+            left=0, top=C.HEADER_H, right=0, bottom=0, bgcolor=C.SCRIM_BODY,
             on_click=lambda e: self._close_palette())
         self.palette_layer = ft.Container(
             ft.Stack([self.palette_scrim,
@@ -364,6 +368,10 @@ class CenturioUI:
         if on_grid:
             self.toolbar_holder.content = self._build_toolbar()
         self.content_col.controls = self._build_content()
+        # Прокручивает сетку только сама сетка. Экраны занимают всю высоту и
+        # катают своё содержимое сами, а внутри скроллящейся колонки `expand`
+        # не растягивает — от этого «Разбор» и «Настройки» сжимались к шапке.
+        self.content_col.scroll = ft.ScrollMode.AUTO if on_grid else None
         self.content_holder.padding = (ft.padding.only(22, 4, 22, 0) if on_grid
                                        else ft.padding.all(0))
         inspector = self._build_inspector() if self._inspector_visible() else None
@@ -562,7 +570,9 @@ class CenturioUI:
         self.search_icon.color = C.TEXT_2 if active else C.MUTED_2
         if active:
             tail = []
-            if not self.calm():
+            # Счётчик — про набранное. На пустом запросе палитра просто предлагает
+            # недавнее, и «6 совпадений» там означало бы совпадение ни с чем.
+            if self.view.query.strip() and not self.calm():
                 tail.append(T(f"{matches} {plu_hits(matches)}", size=11, color=C.MUTED_2))
             tail.append(ft.Container(ft.Icon(ft.Icons.CLOSE, size=15, color=C.MUTED_2),
                                      tooltip="Закрыть поиск",
@@ -791,19 +801,27 @@ class CenturioUI:
                                                   on_click=lambda e: self._new_set())],
                                     vertical_alignment=ft.CrossAxisAlignment.CENTER),
                              padding=ft.padding.only(10, 0, 10, 8))]
+
+        sets_block = []
         if self.view.select_mode:
-            top.append(self._set_drop_hint())
+            sets_block.append(self._set_drop_hint())
         records = self.sets()
         for rec in records:
-            top.append(self._sidebar_set_row(rec))
+            sets_block.append(self._sidebar_set_row(rec))
         if not records and not self.view.select_mode:
-            top.append(ft.Container(
+            sets_block.append(ft.Container(
                 T("Выберите плитки и нажмите «плюс»", size=11.5, color=C.TEXT_DIM),
                 padding=ft.padding.only(10, 0, 10, 4)))
 
+        # Прокручивается только список наборов. Заголовок раздела и подвал стоят
+        # на своих местах, а `expand` внутри скроллящейся колонки Flet понимает
+        # как «растянись» — от этого весь блок уезжал в середину панели.
         return ft.Container(
-            ft.Column(top + [ft.Container(expand=True), self._sidebar_footer()],
-                      spacing=3, expand=True, scroll=ft.ScrollMode.AUTO),
+            ft.Column([ft.Column(top, spacing=3, tight=True),
+                       ft.Column(sets_block, spacing=3, expand=True,
+                                 scroll=ft.ScrollMode.AUTO),
+                       self._sidebar_footer()],
+                      spacing=3, expand=True),
             padding=ft.padding.only(14, 20, 14, 12),
             border=ft.border.only(right=ft.BorderSide(1, C.LINE_2)), expand=True,
         )
@@ -839,7 +857,8 @@ class CenturioUI:
         row = ft.Container(
             ft.Row([ft.Container(ft.Icon(ft.Icons.LAYERS, size=16, color=C.MUTED),
                                  width=16, height=16, alignment=ft.alignment.center),
-                    T("Перетащите выбранное сюда", size=12, color=C.MUTED, expand=True)],
+                    T("Перетащите сюда", size=12, color=C.MUTED, expand=True,
+                      max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)],
                    spacing=10),
             padding=ft.padding.symmetric(8, 10), border_radius=9,
             border=ft.border.all(1, C.BAR_BORDER),
@@ -943,10 +962,17 @@ class CenturioUI:
             border=ft.border.all(1, C.CONTROL), border_radius=9,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
         )
-        # Кнопка панели переехала сюда с рельсы: рельса — только категории.
-        sidebar_btn = self.icon_btn(ft.Icons.VIEW_SIDEBAR, self._toggle_sidebar,
-                                    "Показать/скрыть панель", size=13,
-                                    active=self.sidebar_open)
+        # Кнопка панели переехала сюда с рельсы: рельса — только категории. Без
+        # заливки в активном состоянии — рядом сегментный переключатель вида, и
+        # залитая кнопка читалась как его третий сегмент.
+        sidebar_btn = ft.Container(
+            ft.Icon(ft.Icons.VIEW_SIDEBAR, size=13,
+                    color=C.TEXT if self.sidebar_open else C.MUTED_2),
+            width=34, height=34, alignment=ft.alignment.center,
+            border=ft.border.all(1, C.CONTROL), border_radius=9,
+            tooltip="Показать/скрыть панель",
+            on_click=lambda e: self._toggle_sidebar())
+        self._hoverable(sidebar_btn, None, C.SELECTED_BG)
         # Подсказка описывает то, что действительно работает: модификаторов в
         # событии клика Flet не отдаёт, диапазон берут правой кнопкой.
         right = (T("Клик — отметить · Ctrl+A — всё · правая кнопка — до этой",
@@ -1041,7 +1067,10 @@ class CenturioUI:
             # launches something else.
             cards.append(self._quick_card(app, self._accels.get(app["id"])))
         free = free_quick_slot(self.apps())
-        if free:
+        if free and self._fits_in_row(len(cards)):
+            # Пустое место дописывается только если оно встанет в тот же ряд:
+            # одинокая пунктирная карточка на второй строке — это 98px пустоты
+            # ради подсказки.
             cards.append(self._quick_empty(free))
 
         head_row = [T("Быстрый запуск", size=14.5, weight=ft.FontWeight.BOLD, color=C.TEXT)]
@@ -1050,6 +1079,12 @@ class CenturioUI:
         head = ft.Container(ft.Row(head_row, spacing=10), padding=ft.padding.only(0, 8, 0, 12))
         return [head, ft.Container(ft.Row(cards, spacing=10, wrap=True, run_spacing=10),
                                    padding=ft.padding.only(0, 0, 0, 18))]
+
+    def _fits_in_row(self, count: int) -> bool:
+        """Есть ли в текущем ряду ленты место для ещё одной карточки."""
+        gap = 10
+        per_row = max(1, int((self._content_width() - 44 + gap) // (C.QUICK_W + gap)))
+        return count % per_row != 0
 
     def _quick_card(self, app, accel):
         layers = [ft.Column([
@@ -1074,23 +1109,22 @@ class CenturioUI:
                                   on_secondary_tap_down=lambda e, ap=app: self._app_menu(ap, e))
 
     def _set_card(self, rec):
-        layers = [ft.Column([
-            self.set_slot(38, 11, 19, muted=True),
-            ft.Container(height=8),
-            T(rec["name"], size=12.5, weight=ft.FontWeight.W_600, color=C.TEXT_2,
-              max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-        ], spacing=0, tight=True)]
+        # Уголок карточки в этой ленте занят номером места, а номер означает
+        # Ctrl+N и принадлежит программе. Ctrl+Alt+N набора не влезает туда, не
+        # столкнувшись с плашкой, поэтому он в подсказке — а на виду он в
+        # палитре и на экране набора.
         accel = self._set_accels.get(rec["id"])
-        if accel and not self.calm():
-            # Полная комбинация, а не одна цифра: цифра в этой ленте означает
-            # Ctrl+N, и она принадлежит программе, а не набору.
-            layers.append(ft.Container(
-                T(accel, size=10.5, weight=ft.FontWeight.W_600, color=C.TEXT_FAINT,
-                  font_family="monospace"), right=9, top=9))
         card = ft.Container(
-            ft.Stack(layers), width=C.QUICK_W, height=QUICK_H, bgcolor=C.SET_BG,
+            ft.Column([
+                self.set_slot(38, 11, 19, muted=True),
+                ft.Container(height=8),
+                T(rec["name"], size=12.5, weight=ft.FontWeight.W_600, color=C.TEXT_2,
+                  max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+            ], spacing=0, tight=True),
+            width=C.QUICK_W, height=QUICK_H, bgcolor=C.SET_BG,
             border=ft.border.all(1, C.DASHED), border_radius=12,
             padding=ft.padding.all(12),
+            tooltip=f"{rec['name']} · {accel}" if accel and not self.calm() else rec["name"],
             on_click=lambda e, sid=rec["id"]: self._launch_set(sid))
         self._hoverable(card, C.SET_BG, C.PANEL)
         return ft.GestureDetector(card,
@@ -1394,10 +1428,14 @@ class CenturioUI:
             padding=ft.padding.symmetric(14, 18),
             border=ft.border.only(top=ft.BorderSide(1, C.LINE_2)))
 
+        # Прокручиваются только свойства: шапка с кнопками сверху и «Убрать»
+        # снизу остаются на месте.
         return ft.Container(
-            ft.Column([header, actions, placement, self._insp_advanced(app),
-                       ft.Container(expand=True), footer], spacing=0, expand=True,
-                      scroll=ft.ScrollMode.AUTO),
+            ft.Column([header, actions,
+                       ft.Column([placement, self._insp_advanced(app),
+                                  ft.Container(height=18)],
+                                 spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
+                       footer], spacing=0, expand=True),
             border=ft.border.only(left=ft.BorderSide(1, C.LINE_2)), expand=True)
 
     def _insp_row(self, label, control, sub=None):
@@ -1590,14 +1628,12 @@ class CenturioUI:
             self.palette_card.content = None
             self.palette_card.opacity = 0
             self.palette_card.offset = ft.Offset(0, -0.02)
-            self.palette_scrim.opacity = 0
             return
         rows = self._palette_rows()
         self._palette_count = len(rows)
         self.palette_card.content = dialogs.build_palette(self, rows)
         self.palette_card.opacity = 1
         self.palette_card.offset = ft.Offset(0, 0)
-        self.palette_scrim.opacity = 1
         self.palette_layer.visible = True
 
     def _render_bulk_bar(self):

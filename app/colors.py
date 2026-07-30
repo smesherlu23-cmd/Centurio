@@ -82,8 +82,8 @@ PALETTE_BORDER = "#2a2a33"
 PALETTE_FOOT = "#0c0c10"
 PALETTE_FOOT_BORDER = "#1c1c23"
 PALETTE_ROW = "#1c1c23"       # выделенная строка
-SCRIM_BODY = "#05050799"      # затемнение тела под палитрой
-SHADOW_PALETTE = "#000000cc"  # 0 30px 70px rgba(0,0,0,.8)
+SCRIM_BODY = "#99050507"      # затемнение тела под палитрой
+SHADOW_PALETTE = "#cc000000"  # 0 30px 70px rgba(0,0,0,.8)
 FIELD_ACTIVE_BG = "#15151c"
 FIELD_ACTIVE_BORDER = "#4a4f58"
 
@@ -91,7 +91,7 @@ FIELD_ACTIVE_BORDER = "#4a4f58"
 BAR_BG = "#16161d"
 BAR_BORDER = "#33333a"
 BAR_BTN = "#1f1f27"
-SHADOW_BAR = "#000000a6"      # 0 18px 44px rgba(0,0,0,.65)
+SHADOW_BAR = "#a6000000"      # 0 18px 44px rgba(0,0,0,.65)
 
 # Схема раскладки окон в наборе.
 CANVAS_BG = "#0e0e12"
@@ -109,10 +109,10 @@ DONE_BG = "#0e130f"
 DONE_BORDER = "#244530"
 
 TRANSPARENT = "#00000000"
-SCRIM = "#0c0c0edd"          # подложка звезды поверх обложки
-OVERLAY = "#05050699"        # затемнение под карточкой первого запуска
-SHADOW_MENU = "#000000b3"    # 0 24px 60px rgba(0,0,0,0.7)
-SHADOW_TOAST = "#00000099"   # 0 20px 50px rgba(0,0,0,0.6)
+SCRIM = "#dd0c0c0e"          # подложка звезды поверх обложки
+OVERLAY = "#99050506"        # затемнение под карточкой первого запуска
+SHADOW_MENU = "#b3000000"    # 0 24px 60px rgba(0,0,0,0.7)
+SHADOW_TOAST = "#99000000"   # 0 20px 50px rgba(0,0,0,0.6)
 
 # Единственные цвета, которыми может быть категория. Три RGB-ползунка позволяли
 # выбрать в том числе цвет, неразличимый на #08080a. Четыре последних — цвета
@@ -124,7 +124,7 @@ ACCENT_CHOICES = ("#f5f5f7", "#4f7dff", "#3ecfaf", "#f0a020")
 
 TILE_GRADIENT = ("#191920", "#111116")
 TILE_GRADIENT_SEL = ("#1d1d26", "#141419")
-POSTER_SCRIM = ("#00000000", "#000000e8")
+POSTER_SCRIM = ("#00000000", "#e8000000")
 HUE_STRIP = ("#e34f4f", "#f0a020", "#f5c518", "#4ade80",
              "#3ecfaf", "#4f7dff", "#b06cf0", "#e34f4f")
 
@@ -233,9 +233,14 @@ def rgb_to_hex(r: int, g: int, b: int) -> str:
 
 
 def with_alpha(hex_color: str, alpha: float) -> str:
-    """#rrggbb -> #rrggbbaa, for scrims Flet can't express as opacity."""
-    base = parse_hex(hex_color) or "#000000"
-    return base + "%02x" % max(0, min(255, round(alpha * 255)))
+    """#rrggbb -> #aarrggbb, for scrims Flet can't express as opacity.
+
+    Alpha goes first: Flutter reads an eight-digit colour as #AARRGGBB. Written
+    the CSS way (#RRGGBBAA) every shadow in the program came out with alpha 00 —
+    that is, invisible — and every scrim turned into a faint blue tint.
+    """
+    base = (parse_hex(hex_color) or "#000000").lstrip("#")
+    return "#%02x%s" % (max(0, min(255, round(alpha * 255))), base)
 
 
 def hsl_to_hex(hue: float, lightness: float, saturation: float = 0.62) -> str:

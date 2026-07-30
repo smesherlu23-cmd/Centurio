@@ -1593,6 +1593,37 @@ def test_no_modal_dialogs():
         ok(gone not in dialogs, f"the old {gone.strip('def (')} entry point is gone")
 
 
+def test_translucent_colours_put_alpha_first():
+    """Приёмка: восьмизначный цвет — это #AARRGGBB, а не CSS-порядок.
+
+    Записанный по-CSS (#RRGGBBAA) он молча превращается в прозрачный: у всех
+    теней альфа выходила 00, а затемнение под палитрой давало синеватый оттенок
+    вместо затемнения. Глазами это видно только в собранном окне, поэтому
+    правило сторожит тест.
+    """
+    import re
+
+    offenders = []
+    for name in dir(C):
+        if name.startswith("_"):
+            continue
+        values = getattr(C, name)
+        for value in (values if isinstance(values, tuple) else [values]):
+            if not (isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{8}", value)):
+                continue
+            alpha, rgb = value[1:3], value[3:]
+            # Полностью прозрачный цвет — единственный, у кого альфа 00.
+            if int(alpha, 16) == 0 and int(rgb, 16) != 0:
+                offenders.append(f"C.{name} = {value}")
+    ok(not offenders,
+       "alpha comes first in every translucent colour: "
+       + ("; ".join(offenders) or "all good"))
+
+    ok(C.with_alpha("#112233", 0.5) == "#80112233",
+       "with_alpha() builds #AARRGGBB too")
+    ok(C.with_alpha("#112233", 1) == "#ff112233", "opaque is ff, not 00")
+
+
 def test_colours_come_from_one_file():
     """Приёмка: в интерфейсе нет цветов, которых нет в app/colors.py.
 
@@ -2264,13 +2295,15 @@ def test_ui_quick_numbers_match_the_hotkeys():
         ui.refresh()
         # Только сама лента, без заголовков секций под ней: цифра в ленте — это
         # обещание, что Ctrl+N запустит именно эту карточку.
-        strip = _texts(ui.content_col.controls[1])
-        numbers = [t for t in strip if t.isdigit()]
+        strip = ui.content_col.controls[1]
+        numbers = [t for t in _texts(strip) if t.isdigit()]
         ok(numbers.count("1") == 1 and numbers.count("2") == 1,
            "and each number appears once — the set ahead of them claims none")
-        ok("Ctrl+Alt+1" in strip,
-           "the set spells its combination out instead, because a bare «1» "
-           "in this strip means Ctrl+1 and belongs to a program")
+        tips = [c.tooltip for c in _walk(strip) if getattr(c, "tooltip", None)]
+        ok(any("Ctrl+Alt+1" in t for t in tips),
+           "the set carries its combination in a tooltip instead: a bare «1» in "
+           "this strip means Ctrl+1 and belongs to a program, and Ctrl+Alt+1 "
+           "written in the corner would crowd the icon")
 
         for n in range(3, 10):
             store.add_app({"name": f"App {n}", "path": f"/x/{n}", "quick": True})
@@ -3157,6 +3190,7 @@ if __name__ == "__main__":
     test_log()
     test_queries()
     test_no_modal_dialogs()
+    test_translucent_colours_put_alpha_first()
     test_colours_come_from_one_file()
     test_ui_text_stays_inside_the_bundled_fonts()
     test_ui_single_screen_layout()
