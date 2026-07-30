@@ -154,6 +154,7 @@ LIBRARY_MIN_W = 940
 LIBRARY_MIN_H = 620
 MENU_W = 300
 POPOVER_W = 330
+POPOVER_H = 486       # цвет-и-иконка целиком: своя высота, не подгонянная под окно
 TOAST_MIN_W = 360
 TOAST_MAX_W = 520
 SET_SIDE_W = 300      # колонка «Порядок запуска» на экране набора

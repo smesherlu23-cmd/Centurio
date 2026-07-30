@@ -53,7 +53,6 @@ class ViewState:
 
         # Поповер категории
         self.popover: str | None = None
-        self.icon_query = ""
 
         # Экран «Найти и добавить»
         self.only_new = True
@@ -239,11 +238,9 @@ class ViewState:
     # ---- поповер категории ----
     def open_popover(self, cat_id: str):
         self.popover = cat_id
-        self.icon_query = ""
 
     def close_popover(self):
         self.popover = None
-        self.icon_query = ""
 
     # ---- экран добавления ----
     def reset_add(self):

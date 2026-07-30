@@ -39,6 +39,13 @@ class ToastHost:
         self._left = 0
         self._action = None
 
+        # Пока «Вернуть» ещё можно нажать, клики мимо ничего не должны делать —
+        # иначе можно случайно продолжить работать поверх того, что вот-вот
+        # станет неотменимым. Обычные (безоткатные) тосты ничего не блокируют.
+        self.shade = ft.Container(left=0, top=0, right=0, bottom=0,
+                                  bgcolor=C.TRANSPARENT, visible=False,
+                                  on_click=lambda e: None)
+
         self.icon = ft.Icon(ft.Icons.CHECK, size=18, color=C.GREEN)
         self.text = T("", size=13, color=C.TEXT, max_lines=2,
                       overflow=ft.TextOverflow.ELLIPSIS)
@@ -103,6 +110,7 @@ class ToastHost:
             self.card.width = (C.TOAST_MIN_W if len(text) <= 48 and not detail
                                else C.TOAST_MAX_W)
             self.control.visible = True
+            self.shade.visible = bool(action)
             self._arm(1.0 if action else PLAIN_SECONDS, token)
         self._safe_update()
 
@@ -116,6 +124,7 @@ class ToastHost:
             self._action = None
             self._cancel_timer()
             self.control.visible = False
+            self.shade.visible = False
         self._safe_update()
         if action:
             try:
@@ -128,6 +137,7 @@ class ToastHost:
             self._cancel_timer()
             self._action = None
             self.control.visible = False
+            self.shade.visible = False
         self._safe_update()
 
     def stop(self):
@@ -157,11 +167,13 @@ class ToastHost:
             self._timer = None
             if not self._action:
                 self.control.visible = False
+                self.shade.visible = False
             else:
                 self._left -= 1
                 if self._left <= 0:
                     self._action = None
                     self.control.visible = False
+                    self.shade.visible = False
                 else:
                     self.countdown.value = str(self._left)
                     self._arm(1.0, token)
@@ -173,5 +185,6 @@ class ToastHost:
         try:
             if self.control.page:
                 self.control.update()
+                self.shade.update()
         except Exception:
             log.exception("updating the toast failed")

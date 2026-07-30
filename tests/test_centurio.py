@@ -1926,7 +1926,8 @@ def test_ui_inbox_badge_and_triage():
 
 def test_ui_context_menus():
     """Правая кнопка на плитке открывает инспектор; меню остались там, где
-    они про массовые операции — выделение, категория, пустое место."""
+    они про массовые операции — выделение и категория. По пустому месту
+    сетки правая кнопка больше ничего не открывает."""
     try:
         from app.ui import CenturioUI  # noqa: F401
     except Exception as exc:
@@ -1976,14 +1977,8 @@ def test_ui_context_menus():
         ok(first_row["disabled"], "which is disabled for the first category")
         ui.menu.close()
 
-        ui._empty_menu(_tap())
-        labels = _menu_labels(ui)
-        ok("Обновить список" in labels,
-           "the empty-space menu is where rescanning lives now")
-        ok("Сортировка" in labels and "Найти и добавить" in labels,
-           "along with sorting and adding")
-        ok("Обновить" not in "".join(_texts(ui.toolbar_holder)),
-           "so the toolbar no longer carries a refresh button")
+        ok(not hasattr(ui, "_empty_menu"),
+           "the empty-grid-space context menu is gone, not just unreachable")
 
         # Меню не должно вылезать за край окна.
         ui.menu.close()
@@ -2079,8 +2074,16 @@ def test_ui_delete_is_undone_not_confirmed():
         ok(ui.toast.action_btn.visible and ui.toast.action_label.value == "Вернуть",
            "a toast offers to put it back")
         ok(ui.toast.countdown.value == "8", "counting down from eight seconds")
+        ok(ui.toast.shade.visible,
+           "and a full-window shade blocks clicks elsewhere while «Вернуть» is live")
         ui.toast.fire_action()
         ok(store.get_app(ids[0]) is not None, "«Вернуть» restores it")
+        ok(not ui.toast.shade.visible, "firing the action lifts the block")
+
+        ui.toast.show("Иконки обновлены")
+        ok(not ui.toast.shade.visible,
+           "a plain toast with no undo has nothing to block clicks for")
+        ui.toast.dismiss()
 
         cat = store.state()["categories"][1]
         ui._move_apps_to_category(ids, cat["id"])
