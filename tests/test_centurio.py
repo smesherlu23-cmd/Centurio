@@ -1925,7 +1925,8 @@ def test_ui_inbox_badge_and_triage():
 
 
 def test_ui_context_menus():
-    """Четыре меню по правому клику."""
+    """Правая кнопка на плитке открывает инспектор; меню остались там, где
+    они про массовые операции — выделение, категория, пустое место."""
     try:
         from app.ui import CenturioUI  # noqa: F401
     except Exception as exc:
@@ -1939,23 +1940,13 @@ def test_ui_context_menus():
         ui, page = _ui_for(store)
 
         ui._app_menu(store.get_app(ids[0]), _tap())
-        ok(ui.menu.open, "right-clicking a tile opens a menu")
+        ok(not ui.menu.open,
+           "right-clicking a plain tile no longer opens a popup menu")
+        ok(ui.view.inspector == ids[0] and ui.inspector_container.visible,
+           "it opens the inspector instead — the launch/pin/folder/remove "
+           "actions that used to be in the popup all live there now")
         ok(not page.opened, "and nothing modal was opened to do it")
-        labels = _menu_labels(ui)
-        for entry in ("Запустить", "Открыть ещё окно", "От имени администратора",
-                      "В избранное", "В быстрый запуск", "Переложить в…",
-                      "Добавить в набор…", "Показать в папке", "Параметры запуска",
-                      "Скрыть из сетки", "Убрать из библиотеки"):
-            ok(entry in labels, f"the app menu offers «{entry}»")
-
-        submenu = [r for r in ui.menu._rows if r["kind"] == "item" and r["submenu"]]
-        ok(len(submenu) == 2, "two of its entries open submenus")
-        ui.menu.toggle_submenu("cat", ui._category_submenu([ids[0]]), 250)
-        ok(ui.menu.sub_card.visible, "and the submenu opens next to the menu")
-        ok("Работа" in _texts(ui.menu.sub_card), "listing the categories to move into")
-
-        ui.menu.close()
-        ok(not ui.menu.open, "clicking away closes it")
+        ui._close_inspector()
 
         ui.view.select_one(ids[0])
         ui.view.toggle_selection(ids[1])
@@ -1965,7 +1956,15 @@ def test_ui_context_menus():
            "right-clicking inside a selection offers the selection's menu")
         ok("Скрыть из сетки" in labels, "with the bulk actions on it")
         ok(any("Убрать" in x for x in labels), "including removing all of it")
+
+        submenu = [r for r in ui.menu._rows if r["kind"] == "item" and r["submenu"]]
+        ok(len(submenu) == 2, "two of its entries open submenus")
+        ui.menu.toggle_submenu("cat", ui._category_submenu(ids[:2]), 250)
+        ok(ui.menu.sub_card.visible, "and the submenu opens next to the menu")
+        ok("Работа" in _texts(ui.menu.sub_card), "listing the categories to move into")
+
         ui.menu.close()
+        ok(not ui.menu.open, "clicking away closes it")
 
         ui._category_menu(store.state()["categories"][0], _tap())
         labels = _menu_labels(ui)
@@ -1988,7 +1987,7 @@ def test_ui_context_menus():
 
         # Меню не должно вылезать за край окна.
         ui.menu.close()
-        ui._app_menu(store.get_app(ids[0]), _tap(1390, 870))
+        ui._category_menu(store.state()["categories"][0], _tap(1390, 870))
         ok(ui.menu.card.left < 1390 and ui.menu.card.top < 870,
            "a menu opened near the corner is flipped back inside the window")
 
@@ -2014,18 +2013,39 @@ def test_ui_inspector_replaces_the_modal_form():
         ok("Excel" in shown, "the panel names the app")
         ok(any("EXCEL.EXE" in t for t in shown), "and shows where it lives")
         ok("Запустить" in shown, "with the action that runs it")
-        ok("Категория" in shown and "Быстрый запуск" in shown,
+        ok("Показать в папке" in [c.tooltip for c in _walk(ui.inspector_container)
+                                  if getattr(c, "tooltip", None)],
+           "opening the containing folder is a button here now, not a menu item")
+        ok("Категория" in shown and "Быстрый запуск" in shown
+           and "Своя горячая клавиша" in shown and "В наборах" in shown,
            "the properties are there")
+        ok("В набор" in shown,
+           "«В наборах» stays even for an app in none — that's how it joins the first one")
         ok("ПАРАМЕТРЫ ЗАПУСКА" in shown, "and the collapsed launch options")
+        ok(not any("Скрыть" in t for t in shown),
+           "«Скрыть» didn't come along when the popup's items moved in here")
 
         # Каждое изменение применяется сразу, кнопки «Сохранить» нет.
         ok("Сохранить" not in shown, "there is no save button")
         ui._toggle_quick(app_id, True)
         ok(store.get_app(app_id)["quick"] is True, "the pin toggle writes through")
+        ui.refresh()
+        ok("Сейчас место 1" in _texts(ui.inspector_container),
+           "and its slot shows up under «Быстрый запуск» right away")
         ui._set_args(app_id, "--profile work")
         ok(store.get_app(app_id)["args"] == ["--profile", "work"], "so do the arguments")
         ui._set_admin(app_id, True)
         ok(store.get_app(app_id)["run_as_admin"] is True, "and the admin switch")
+
+        ui._launch_more_menu(store.get_app(app_id), _tap())
+        for entry in ("Открыть ещё окно", "От имени администратора"):
+            ok(entry in _menu_labels(ui), f"«Ещё способы запуска» offers «{entry}»")
+        ui.menu.close()
+
+        ui._add_to_set_menu(store.get_app(app_id), _tap())
+        ok("Новый набор…" in _menu_labels(ui),
+           "the «+» chip in «В наборах» opens the same add-to-set menu")
+        ui.menu.close()
 
         ui.view.adv = True
         ui.refresh()
@@ -2173,6 +2193,42 @@ def test_ui_sets():
         ok(len(store.state()["sets"]) == 1, "and restored")
 
 
+def test_ui_click_launches_right_click_inspects():
+    """ЛКМ по плитке запускает программу, ПКМ открывает инспектор."""
+    try:
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI click-behaviour test", exc)
+        return
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        ids = [store.add_app({"name": n, "path": f"/x/{n}", "category_id": "work"})["id"]
+               for n in ("A", "B")]
+        ui, _ = _ui_for(store)
+        ui.launcher.launch.return_value = {"ok": True, "running": True}
+        ui.launcher.running_ids.return_value = []
+
+        ui._tile_tap(ids[0], ids)
+        ok(ui.launcher.launch.called, "a plain click launches the app directly")
+        ok(ui.view.inspector is None, "without opening the inspector")
+
+        ui._app_menu(store.get_app(ids[1]), _tap())
+        ok(ui.launcher.launch.call_count == 1,
+           "right-clicking a plain tile does not launch it")
+        ok(ui.view.inspector == ids[1] and ui.inspector_container.visible,
+           "right-clicking opens the inspector — the mirror image of the old ЛКМ")
+
+        # В списке — то же самое.
+        ui._set_mode("list")
+        ui._close_inspector()
+        ui.launcher.launch.reset_mock()
+        ui._tile_tap(ids[0], ids)
+        ok(ui.launcher.launch.called, "list rows launch on a plain click too")
+        ui._app_menu(store.get_app(ids[1]), _tap())
+        ok(ui.view.inspector == ids[1], "and open the inspector on the right click")
+
+
 def test_ui_bulk_operations():
     """Массовые операции: режим выбора, плавающая панель, отмена вместо вопроса."""
     try:
@@ -2263,10 +2319,13 @@ def test_ui_bulk_operations():
         ok(ui.view.sel == ids[1:], "«Выбрать до этой» takes the range with the mouse")
 
         ui._toggle_select_mode()
+        ok(not ui.view.select_mode, "leaving select mode")
         ui._app_menu(store.get_app(ids[0]), _tap())
-        ok("Выбрать несколько" in _menu_labels(ui),
-           "and an ordinary tile menu is how the mode is entered with the mouse")
-        ui.menu.close()
+        ok(ui.view.inspector == ids[0] and not ui.menu.open,
+           "outside select mode, right-clicking an ordinary tile opens the "
+           "inspector instead of a menu — «Выбрать» in the toolbar is how the "
+           "mode is entered with the mouse now")
+        ui._close_inspector()
 
 
 def test_ui_quick_numbers_match_the_hotkeys():
@@ -3200,6 +3259,7 @@ if __name__ == "__main__":
     test_ui_inspector_replaces_the_modal_form()
     test_ui_delete_is_undone_not_confirmed()
     test_ui_sets()
+    test_ui_click_launches_right_click_inspects()
     test_ui_bulk_operations()
     test_ui_quick_numbers_match_the_hotkeys()
     test_ui_add_screen()

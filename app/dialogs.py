@@ -455,6 +455,10 @@ def build_bulk_bar(ui):
         alignment=ft.alignment.center, on_click=lambda e: ui._toggle_select_mode())
     ui._hoverable(cancel, None, C.BAR_BTN)
 
+    # Без «Показать» здесь скрытая программа была бы без возврата: у плитки
+    # больше нет своего «Показывать снова», массовые операции — единственный
+    # путь назад, поэтому кнопка meняет смысл в разделе «Скрытые».
+    in_hidden = ui.filter == "hidden"
     return ft.Container(
         ft.Row([
             T(f"Выбрано {len(ids)}", size=13, weight=ft.FontWeight.W_600, color=C.WHITE),
@@ -463,7 +467,9 @@ def build_bulk_bar(ui):
             action("В набор", ft.Icons.LAYERS, lambda: ui._bulk_menu("set"), arrow=True),
             action("В избранное", ft.Icons.STAR, lambda: ui._bulk_favorite(ids),
                    icon_color=C.STAR),
-            action("Скрыть", ft.Icons.VISIBILITY_OFF, lambda: ui._hide_apps(ids, True)),
+            action("Показать" if in_hidden else "Скрыть",
+                   ft.Icons.VISIBILITY if in_hidden else ft.Icons.VISIBILITY_OFF,
+                   lambda: ui._hide_apps(ids, not in_hidden)),
             action("Убрать", ft.Icons.DELETE_OUTLINE, lambda: ui._remove_apps(ids),
                    icon_color=C.ERR_TEXT, color=C.ERR_TEXT, plain=True),
             divider(),
