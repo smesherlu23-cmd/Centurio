@@ -157,10 +157,13 @@ python tests/test_centurio.py
 
 ```bash
 pip install "flet[all]==0.28.3"
-python -m app.iconify                       # сгенерировать icon.png и tray.png
 flet build windows -v                       # результат: build\windows\
 & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\centurio.iss
 ```
+
+`assets/icon.png` — готовая иконка, лежит в репозитории; `python -m app.iconify`
+нужен только если её не хватает (перерисует заглушку, существующий файл не
+трогает).
 
 Готовый `installer\Output\CenturioSetup.exe` ставится без прав администратора и
 предлагает создать ярлыки на рабочем столе и в автозапуске. То же самое делает

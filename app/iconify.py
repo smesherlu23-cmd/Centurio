@@ -106,10 +106,11 @@ def generate_icon(path: Path | str, size: int = 256) -> Path:
 def ensure_icons(assets_dir: Path | str) -> Path:
     """Make sure the window/tray icon exists, and return it.
 
-    Runs on the startup path, so it draws only what the running app actually
-    reads. tray.png is a build-time asset — nothing loads it at runtime, the
-    tray is handed this same icon.png — so it is left to __main__ below and to
-    the `python -m app.iconify` step in the build recipe.
+    assets/icon.png is the real designed icon, checked into the repo —
+    `_draw()` only ever ran to produce a stand-in before that existed, and now
+    only runs again if the file is somehow missing (a broken checkout, a
+    corrupted install), so the app still has something to show rather than
+    crashing on a missing asset.
     """
     assets = Path(assets_dir)
     icon = assets / "icon.png"
@@ -119,6 +120,12 @@ def ensure_icons(assets_dir: Path | str) -> Path:
 
 
 if __name__ == "__main__":
+    # Redraws the stand-in — but only where the real, checked-in icon is
+    # missing. Never overwrites it; delete the file first to regenerate one.
     here = Path(__file__).resolve().parent.parent / "assets"
-    print("wrote", generate_icon(here / "icon.png", 256))
-    print("wrote", generate_icon(here / "tray.png", 32))
+    for name, size in (("icon.png", 256), ("tray.png", 32)):
+        path = here / name
+        if path.exists():
+            print("kept", path)
+        else:
+            print("wrote", generate_icon(path, size))
