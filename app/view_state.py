@@ -51,6 +51,9 @@ class ViewState:
         self.collapsed: set[str] = {c for c in collapsed if isinstance(c, str)} \
             if isinstance(collapsed, list) else set()
 
+        # Открытый раздел настроек
+        self.settings_tab = "view"
+
         # Поповер категории
         self.popover: str | None = None
 

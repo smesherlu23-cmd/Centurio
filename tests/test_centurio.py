@@ -2806,12 +2806,32 @@ def test_ui_settings_screen():
         ui._open_settings()
         ok(not page.opened, "the settings are a screen, not a dialog")
 
+        # Разделы слева, содержимое справа. «Категории» среди разделов нет
+        # намеренно: ими управляют в рельсе и в поповере «Цвет и иконка».
         shown = _texts(ui.content_col.controls[0])
-        for row in ("Вызов поиска", "Прятать окно после запуска", "Запускать с Windows",
-                    "Крестик сворачивает в трей", "Складывать новое в разбор",
-                    "Спокойный вид", "Размер плиток"):
-            ok(row in shown, f"«{row}» is visible without unfolding anything")
-        ok(any("Акцент" in t for t in shown), "and the rare things are named on one line")
+        for tab in ("Вид", "Клавиши", "Запуск и трей", "Библиотека"):
+            ok(tab in shown, f"the section «{tab}» is in the left column")
+        ok("Категории" not in shown, "and «Категории» is not a settings section")
+        ok(ui.view.settings_tab == "view", "«Вид» is the one open to begin with")
+        for row in ("АКЦЕНТ", "ПЛОТНОСТЬ", "Спокойный вид", "Постеры для игр"):
+            ok(row in shown, f"«{row}» is on it")
+
+        # Каждая настройка живёт ровно в одном разделе и ничего не свёрнуто.
+        expected = {
+            "keys": ("Вызов поиска", "Подсказки клавиш"),
+            "startup": ("Запускать с Windows", "Крестик сворачивает в трей",
+                        "Прятать окно после запуска"),
+            "library": ("Складывать новое в разбор", "Проверять новое раз в 15 минут",
+                        "Кэш иконок", "Копия библиотеки", "Файл библиотеки",
+                        "Подробный лог", "Первый запуск"),
+        }
+        for tab, rows in expected.items():
+            ui.set_settings_tab(tab)
+            here = _texts(ui.content_col.controls[0])
+            for row in rows:
+                ok(row in here, f"«{row}» is on the «{tab}» section")
+            ok("АКЦЕНТ" not in here, f"and «{tab}» does not carry «Вид»'s controls")
+        ui.set_settings_tab("view")
 
         for key in ("hide_after", "autostart", "close_to_tray", "triage", "calm"):
             before = bool(store.state()["settings"].get(key))
@@ -2824,13 +2844,7 @@ def test_ui_settings_screen():
         ok(store.state()["settings"]["launch_hotkey"] in LAUNCH_HOTKEYS,
            "and only ever becomes one that registers")
 
-        ui._settings_rare_open = True
-        ui.refresh()
-        rare = _texts(ui.content_col.controls[0])
-        for row in ("Постеры вместо иконок у игр", "Кэш иконок", "Копия библиотеки",
-                    "Подробный лог", "Показать первый запуск"):
-            ok(row in rare, f"unfolding shows «{row}»")
-
+        ui.set_settings_tab("library")
         ui.backup()
         ok(any(p.name.startswith("centurio-backup-") for p in Path(d).glob("*.json")),
            "«Сохранить» writes a backup next to the library")

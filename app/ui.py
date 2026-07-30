@@ -2855,6 +2855,10 @@ class CenturioUI:
         self.view.set_screen("settings")
         self.refresh()
 
+    def set_settings_tab(self, tab: str):
+        self.view.settings_tab = tab
+        self.refresh()
+
     def _open_triage(self):
         self.view.set_screen("triage")
         self.refresh()
