@@ -24,7 +24,7 @@ from . import queries
 from . import windows as W
 from .format import (T, cat_icon, plu_apps, plu_hits, plu_programs, plu_windows,
                      short_ago, time_ago)
-from .hotkeys import free_quick_slot, quick_accels, set_accels
+from .hotkeys import free_quick_slot, is_reserved, quick_accels, set_accels
 from .images import icon_image, img_b64, is_launcher_art
 from .menus import MenuHost
 from .store import Store
@@ -2043,8 +2043,15 @@ class CenturioUI:
             self.toast.error("Нужна комбинация с Ctrl, Alt или Shift")
             return
         accel = "+".join(parts + [key if len(key) > 1 else key.upper()])
+        if is_reserved(accel):
+            self.toast.error(f"{accel} занята Windows — эту комбинацию система не отдаст")
+            return
+        target = self.view.capture_target
         self.view.capture = False
-        self._set_hotkey(self.view.inspector, accel)
+        if target == "launch":
+            self._set_launch_hotkey(accel)
+        else:
+            self._set_hotkey(self.view.inspector, accel)
 
     def _flat_apps(self, sections=None):
         return queries.flatten_sections(self._sections() if sections is None else sections)
@@ -2208,8 +2215,12 @@ class CenturioUI:
         self.view.adv = not self.view.adv
         self.refresh()
 
-    def _begin_capture(self):
-        self.view.capture = not self.view.capture
+    def _begin_capture(self, target: str = "app"):
+        if self.view.capture and self.view.capture_target == target:
+            self.view.capture = False
+        else:
+            self.view.capture = True
+            self.view.capture_target = target
         self.refresh()
 
     def _toast_hint_quick(self):
@@ -2519,6 +2530,10 @@ class CenturioUI:
             self.refresh()
             return
         if accel:
+            if accel.lower() == (self.setting("launch_hotkey") or "").lower():
+                self.toast.error(f"{accel} уже занята — вызовом Centurio")
+                self.refresh()
+                return
             clash = next((a for a in self.apps()
                           if a["id"] != app_id
                           and (a.get("hotkey") or "").lower() == accel.lower()), None)
@@ -2885,17 +2900,19 @@ class CenturioUI:
             cb(key, value)
         self.refresh()
 
-    def cycle_launch_hotkey(self):
-        """Step through the combinations that raise the window.
-
-        A capture field would need the window focused to read the combination
-        that is supposed to work when it isn't, so this offers the few that are
-        known to register cleanly instead.
-        """
-        from .hotkeys import LAUNCH_HOTKEYS
-        current = self.setting("launch_hotkey") or LAUNCH_HOTKEYS[0]
-        index = LAUNCH_HOTKEYS.index(current) if current in LAUNCH_HOTKEYS else -1
-        self.set_setting("launch_hotkey", LAUNCH_HOTKEYS[(index + 1) % len(LAUNCH_HOTKEYS)])
+    def _set_launch_hotkey(self, accel):
+        """Общая комбинация — как «Своя горячая клавиша» у программы, но одна
+        на всё приложение, и ею поднимают саму библиотеку из любой другой."""
+        if not accel:
+            self.refresh()
+            return
+        clash = next((a for a in self.apps()
+                      if (a.get("hotkey") or "").lower() == accel.lower()), None)
+        if clash:
+            self.toast.error(f"{accel} уже занята — «{clash['name']}»")
+            self.refresh()
+            return
+        self.set_setting("launch_hotkey", accel)
 
     def _on_library_changed(self):
         self.view.revalidate(self.categories())

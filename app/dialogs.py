@@ -1094,20 +1094,33 @@ def _settings_view(ui):
     ]
 
 
+def _launch_hotkey_field(ui):
+    """Общая комбинация — тот же захват, что у «Своя горячая клавиша» ниже,
+    просто цель другая: не программа, а сама библиотека."""
+    capturing = ui.view.capture and ui.view.capture_target == "launch"
+    explicit = ui.setting("launch_hotkey")
+    label = "нажмите…" if capturing else format_accel(explicit)
+    return ft.Container(
+        ft.Row([T(label, size=11.5, color=C.TEXT, font_family="monospace"),
+                ft.Icon(ft.Icons.EDIT, size=14, color=C.MUTED_2)],
+               spacing=8, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        height=32, padding=ft.padding.symmetric(0, 12), bgcolor=C.PANEL,
+        border=ft.border.all(1, ui._accent() if capturing else C.TOAST_BORDER),
+        border_radius=8, alignment=ft.alignment.center,
+        tooltip="Нажмите комбинацию" if capturing else "Другая комбинация",
+        on_click=lambda e: ui._begin_capture("launch"))
+
+
 def _settings_keys(ui):
     return [
-        _row(ui, "Вызов поиска", "Поднимает окно из любой программы",
-             ft.Container(T(format_accel(ui.setting("launch_hotkey")), size=11.5,
-                            color=C.TEXT, font_family="monospace"),
-                          height=32, padding=ft.padding.symmetric(0, 12), bgcolor=C.PANEL,
-                          border=ft.border.all(1, C.TOAST_BORDER), border_radius=8,
-                          alignment=ft.alignment.center, tooltip="Другая комбинация",
-                          on_click=lambda e: ui.cycle_launch_hotkey())),
+        _row(ui, "Вызов Centurio", "Поднимает библиотеку из любой программы",
+             _launch_hotkey_field(ui)),
         _switch(ui, "Подсказки клавиш", "Строка снизу в палитре поиска", "hints"),
         ft.Container(height=1, bgcolor=C.LINE_2),
         _settings_note("Своя комбинация для отдельной программы задаётся в панели "
                        "справа от неё, а Ctrl+1…9 раздаются закреплённым в "
-                       "«Быстром запуске» сами."),
+                       "«Быстром запуске» сами. Комбинации, которые уже что-то "
+                       "делают в Windows — Alt+F4, Win+L и подобные — назначить нельзя."),
     ]
 
 

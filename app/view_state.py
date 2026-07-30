@@ -40,6 +40,7 @@ class ViewState:
         self.sel: list[str] = []
         self.adv = False
         self.capture = False
+        self.capture_target = "app"
 
         # Массовые операции
         self.select_mode = False
@@ -223,7 +224,11 @@ class ViewState:
             self.selection_anchor = None
         if self.inspector not in live:
             self.inspector = None
-            self.capture = False
+            # Capturing the app's own hotkey no longer makes sense once the app
+            # is gone — but capturing the launch hotkey never had an inspector
+            # open in the first place, so it must survive this.
+            if self.capture_target == "app":
+                self.capture = False
 
     def close_inspector(self):
         self.inspector = None

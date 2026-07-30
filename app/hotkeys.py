@@ -32,10 +32,44 @@ def to_pynput(accel: str) -> str:
     return "+".join(out)
 
 
-# Combinations offered for raising the window with the search palette open.
-# Anything here has to survive to_pynput() and be unlikely to collide with a
-# program's own shortcut.
-LAUNCH_HOTKEYS = ("Ctrl+Space", "Alt+Space", "Ctrl+Shift+Space", "Ctrl+Alt+Space")
+_MOD_ORDER = ("ctrl", "alt", "shift", "win")
+_MOD_ALIASES = {"control": "ctrl", "option": "alt", "cmd": "win", "super": "win", "meta": "win"}
+
+
+def normalize_accel(accel: str) -> str:
+    """Order- and case-independent form: "Shift+Ctrl+G" and "Ctrl+Shift+G" match.
+
+    Used to compare a captured combination against RESERVED_COMBOS below,
+    where listing every press order a shortcut might be typed in would be
+    pointless duplication.
+    """
+    tokens = [t.strip().lower() for t in str(accel or "").split("+") if t.strip()]
+    if not tokens:
+        return ""
+    key = tokens[-1]
+    mods = {_MOD_ALIASES.get(t, t) for t in tokens[:-1]}
+    return "+".join([m for m in _MOD_ORDER if m in mods] + [key])
+
+
+# Комбинации, за которые в Windows уже отвечает система, а не программа —
+# отдать их приложению значило бы либо ничего не получить (Ctrl+Alt+Delete
+# программе не долетает вовсе), либо сломать то, что от этих клавиш и так
+# ждут (Alt+F4, Win+L). Список выборочный: не всё, что можно нажать, а то,
+# что реально что-то делает в системе.
+RESERVED_COMBOS = {normalize_accel(c) for c in (
+    "Alt+F4", "Alt+Tab", "Alt+Shift+Tab", "Ctrl+Alt+Tab", "Alt+Esc", "Alt+Escape",
+    "Ctrl+Esc", "Ctrl+Shift+Esc", "Ctrl+Alt+Delete", "Ctrl+Alt+Del",
+    "Win+L", "Win+D", "Win+E", "Win+R", "Win+I", "Win+A", "Win+X", "Win+U",
+    "Win+P", "Win+S", "Win+Q", "Win+M", "Win+Tab", "Win+Pause", "Win+Comma",
+    "Win+Period", "Win+Space", "Win+Shift+S", "Win+Ctrl+D", "Win+Ctrl+F4",
+    "Win+Ctrl+Left", "Win+Ctrl+Right", "Win+Shift+M", "Win+Break",
+)}
+
+
+def is_reserved(accel: str) -> bool:
+    """True for a combination Windows already answers to at the system level."""
+    return normalize_accel(accel) in RESERVED_COMBOS
+
 
 _KEY_LABELS = {"space": "Пробел", "enter": "Ввод", "esc": "Esc", "escape": "Esc",
                "tab": "Tab", "backspace": "Backspace"}
@@ -54,9 +88,9 @@ def format_accel(accel: str | None) -> str:
     return "+".join(parts)
 
 
-# The id the "raise the window and search" toggle is registered under. It is not
+# The id the global "raise the window" toggle is registered under. It is not
 # an app, so the trigger callback has to tell it apart from one.
-TOGGLE_SEARCH = "__centurio_toggle_search__"
+TOGGLE_LAUNCH = "__centurio_toggle_launch__"
 
 # Наборы живут в том же списке привязок, что и приложения, а id и там и там —
 # uuid. Различает их этот префикс.

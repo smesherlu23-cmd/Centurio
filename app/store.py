@@ -22,10 +22,8 @@ DEFAULT_CATEGORIES = [
     {"id": "dev", "name": "Разработка", "icon": "code", "color": "#ffffff", "order": 3},
 ]
 
-# The combination that raises the window and opens the search palette. Stored so
-# the settings screen can rebind it; the format is the one to_pynput reads. The
-# key is still called launch_hotkey — it is the same setting users already have,
-# only the window it summons is now the library itself.
+# The combination that raises the library window. Stored so the settings
+# screen can rebind it; the format is the one to_pynput reads.
 DEFAULT_LAUNCH_HOTKEY = "Ctrl+Space"
 
 # Пауза между запусками программ набора, секунды.
