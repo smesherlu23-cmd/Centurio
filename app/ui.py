@@ -314,8 +314,7 @@ class CenturioUI:
                                               spacing=0, expand=True)
         root = ft.Stack([self.body, self.inspector_overlay, self.palette_layer,
                          self.bulk_layer, self.popover_layer, self.onboarding_layer,
-                         self.menu.control, self.toast.shade, self.toast.control],
-                        expand=True)
+                         self.menu.control, self.toast.control], expand=True)
         self.page.add(root)
         self.refresh()
 
@@ -2854,6 +2853,10 @@ class CenturioUI:
 
     def _open_settings(self):
         self.view.set_screen("settings")
+        self.refresh()
+
+    def set_settings_tab(self, tab: str):
+        self.view.settings_tab = tab
         self.refresh()
 
     def _open_triage(self):
