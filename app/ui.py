@@ -1290,10 +1290,11 @@ class CenturioUI:
         return self._tile_gestures(tile, a, ids)
 
     def _tile_gestures(self, tile, a, ids):
+        # Клик уже запускает программу, второй по счёту (двойной тап) запускал
+        # бы её ещё раз — обработчик не нужен.
         return ft.GestureDetector(
             tile, mouse_cursor=ft.MouseCursor.CLICK,
             on_tap_down=lambda e, i=a["id"]: self._tile_tap(i, ids, e),
-            on_double_tap=lambda e, i=a["id"]: self._launch(i),
             on_secondary_tap_down=lambda e, ap=a: self._app_menu(ap, e))
 
     def _list(self, apps):
@@ -1337,7 +1338,6 @@ class CenturioUI:
             self._hoverable(row, C.PANEL, C.SELECTED_BG)
         return ft.GestureDetector(row,
                                   on_tap_down=lambda e, i=a["id"]: self._tile_tap(i, ids, e),
-                                  on_double_tap=lambda e, i=a["id"]: self._launch(i),
                                   on_secondary_tap_down=lambda e, ap=a: self._app_menu(ap, e))
 
     def _empty(self, title, text, btn_label, on_click):
@@ -1386,6 +1386,8 @@ class CenturioUI:
                                 alignment=ft.alignment.center, tooltip=tooltip,
                                 on_click=lambda e: handler())
 
+        # «Открыть ещё окно» и «От администратора» — запасные способы запуска,
+        # реже нужные, чем сам запуск: они за «Ещё», а не отдельными кнопками.
         actions = ft.Container(
             ft.Row([
                 self.primary_btn("Переключиться" if running else "Запустить",
@@ -1395,15 +1397,23 @@ class CenturioUI:
                 square(ft.Icons.STAR if app.get("favorite") else ft.Icons.STAR_BORDER,
                        "В избранное", lambda: self._toggle_fav(app["id"]),
                        C.STAR if app.get("favorite") else C.MUTED),
-                square(ft.Icons.MORE_HORIZ, "Ещё",
-                       lambda: self._app_menu(app, None)),
+                square(ft.Icons.FOLDER_OPEN, "Показать в папке",
+                       lambda: self._show_in_folder(app["id"])),
+                square(ft.Icons.MORE_HORIZ, "Ещё способы запуска",
+                       lambda: self._launch_more_menu(app, None)),
             ], spacing=8), padding=ft.padding.only(18, 0, 18, 0))
 
-        props = [self._insp_row("Категория", self._cat_selector(app, cat)),
-                 self._insp_row("Быстрый запуск", self._hotkey_field(app))]
-        chips = self._set_chips(app)
-        if chips is not None:
-            props.append(self._insp_row("В наборах", chips))
+        props = [
+            self._insp_row("Категория", self._cat_selector(app, cat)),
+            self._insp_row("Быстрый запуск",
+                           self._toggle(bool(app.get("quick")),
+                                        lambda v: self._toggle_quick(app["id"], v)),
+                           sub=self._quick_sub(app)),
+            self._insp_row("Своя горячая клавиша", self._hotkey_field(app),
+                           sub="Нажмите комбинацию" if self.view.capture
+                           else "Работает из любого окна"),
+            self._insp_row("В наборах", self._set_chips(app)),
+        ]
         props.append(ft.Container(height=1, bgcolor=C.LINE_2))
         props.append(self._insp_tech(app))
         placement = ft.Container(ft.Column(props, spacing=12),
@@ -1455,18 +1465,24 @@ class CenturioUI:
         return ft.Column(lines, spacing=7, tight=True)
 
     def _set_chips(self, app):
+        """Чипы наборов, где есть программа, плюс «+» — заменяет «Добавить в
+        набор…» из старого меню. Строка всегда на месте, даже без единого
+        набора: иначе добавить программу в первый набор было бы неоткуда."""
         members = [rec for rec in self.sets() if app["id"] in rec.get("apps", [])]
-        if not members:
-            return None
-        chips = []
-        for rec in members:
-            chips.append(ft.Container(
-                ft.Row([ft.Icon(ft.Icons.LAYERS, size=13, color=C.MUTED),
-                        T(rec["name"], size=11.5, color=C.TEXT_2, max_lines=1,
-                          overflow=ft.TextOverflow.ELLIPSIS)], spacing=6, tight=True),
-                height=26, border_radius=13, bgcolor=C.SET_SLOT_BG,
-                border=ft.border.all(1, C.CONTROL), padding=ft.padding.symmetric(0, 9),
-                on_click=lambda e, sid=rec["id"]: self._open_set(sid)))
+        chips = [ft.Container(
+            ft.Row([ft.Icon(ft.Icons.LAYERS, size=13, color=C.MUTED),
+                    T(rec["name"], size=11.5, color=C.TEXT_2, max_lines=1,
+                      overflow=ft.TextOverflow.ELLIPSIS)], spacing=6, tight=True),
+            height=26, border_radius=13, bgcolor=C.SET_SLOT_BG,
+            border=ft.border.all(1, C.CONTROL), padding=ft.padding.symmetric(0, 9),
+            on_click=lambda e, sid=rec["id"]: self._open_set(sid)) for rec in members]
+        chips.append(ft.Container(
+            ft.Row([ft.Icon(ft.Icons.ADD, size=13, color=C.MUTED_2),
+                    T("Ещё" if members else "В набор", size=11.5, color=C.MUTED_2)],
+                   spacing=6, tight=True),
+            height=26, border_radius=13, border=ft.border.all(1, C.DASHED),
+            padding=ft.padding.symmetric(0, 9), tooltip="Добавить в набор",
+            on_click=lambda e: self._add_to_set_menu(app, e)))
         return ft.Row(chips, spacing=6, wrap=True, run_spacing=6, tight=True)
 
     def _cat_selector(self, app, cat):
@@ -1484,16 +1500,26 @@ class CenturioUI:
             tooltip="Выбрать категорию",
             on_click=lambda e: self._category_picker(app, e))
 
-    def _hotkey_field(self, app):
-        """Одно поле вместо переключателя и подписи: что нажать, чтобы открыть.
-
-        Клик начинает запись комбинации. Пустое поле — «не задана»: закрепить
-        программу в ленте можно из меню, и тогда здесь появится её Ctrl+N.
-        """
+    def _quick_sub(self, app) -> str:
+        """Подпись под переключателем «Быстрый запуск»: что он даст."""
         accel = self._accels.get(app["id"])
-        label = "нажмите…" if self.view.capture else (accel or "не задана")
+        if app.get("quick") and accel:
+            return f"Сейчас место {accel.split('+')[-1]}"
+        if app.get("quick"):
+            return "Свободных мест не осталось"
+        return "Появится в ленте сверху"
+
+    def _hotkey_field(self, app):
+        """Своя комбинация клавиш — отдельно от закрепления в ленте выше.
+
+        Именно `hotkey`, а не смешанный `_accels`: тот включает и авто-номер от
+        закрепления в ленте, а это поле — только явно назначенная комбинация.
+        Клик начинает запись комбинации. Пустое поле — «не задана».
+        """
+        explicit = app.get("hotkey")
+        label = "нажмите…" if self.view.capture else (explicit or "не задана")
         row = [T(label, size=11.5, font_family="monospace",
-                 color=C.TEXT if (accel or self.view.capture) else C.MUTED_2),
+                 color=C.TEXT if (explicit or self.view.capture) else C.MUTED_2),
                ft.Icon(ft.Icons.EDIT, size=14, color=C.MUTED_2)]
         field = ft.Container(
             ft.Row(row, spacing=8, tight=True,
@@ -1657,6 +1683,15 @@ class CenturioUI:
         self._safe_refresh()
 
     def _app_menu(self, app, e):
+        """ПКМ по плитке.
+
+        Раньше здесь было контекстное меню одной программы; все его пункты
+        (кроме «Скрыть») теперь живут в самом инспекторе, а правая кнопка
+        просто его открывает — так же, как раньше открывал левый клик, пока
+        сам левый клик не стал запускать программу напрямую. Меню выбора и
+        меню выделения — отдельная история про массовые операции, они
+        остаются меню.
+        """
         app = self.store.get_app(app["id"]) or app
         if self.view.select_mode:
             self._select_mode_menu(app, e)
@@ -1664,50 +1699,7 @@ class CenturioUI:
         if app["id"] in self.view.sel and len(self.view.sel) > 1:
             self._selection_menu(e)
             return
-        x, y = self._menu_at(e)
-        running = app["id"] in self.running
-        free = free_quick_slot(self.apps())
-        rows = [
-            menus.item(ft.Icons.SYNC_ALT if running else ft.Icons.PLAY_ARROW,
-                       "Переключиться" if running else "Запустить",
-                       lambda: self._launch(app["id"]), hint="Enter"),
-            menus.item(ft.Icons.ADD, "Открыть ещё окно",
-                       lambda: self._launch(app["id"], again=True)),
-            menus.item(ft.Icons.SHIELD, "От имени администратора",
-                       lambda: self._launch(app["id"], as_admin=True)),
-            menus.separator(),
-            menus.item(ft.Icons.STAR if app.get("favorite") else ft.Icons.STAR_BORDER,
-                       "Убрать из избранного" if app.get("favorite") else "В избранное",
-                       lambda: self._toggle_fav(app["id"])),
-            menus.item(ft.Icons.BOLT,
-                       "Убрать из быстрого запуска" if app.get("quick") else "В быстрый запуск",
-                       lambda: self._toggle_quick(app["id"], not app.get("quick")),
-                       hint="" if app.get("quick") or self.calm()
-                       else (f"место {free}" if free else "мест нет")),
-            menus.item(ft.Icons.FOLDER, "Переложить в…",
-                       lambda: self.menu.toggle_submenu(
-                           "cat", self._category_submenu([app["id"]]), y),
-                       submenu=True),
-            menus.item(ft.Icons.LAYERS, "Добавить в набор…",
-                       lambda: self.menu.toggle_submenu(
-                           "set", self._set_submenu([app["id"]]), y),
-                       submenu=True),
-            menus.separator(),
-            menus.item(ft.Icons.FOLDER_OPEN, "Показать в папке",
-                       lambda: self._show_in_folder(app["id"])),
-            menus.item(ft.Icons.TUNE, "Параметры запуска",
-                       lambda: self._open_advanced(app["id"]),
-                       hint="" if self.calm() else "панель"),
-            menus.item(ft.Icons.CHECK_BOX_OUTLINE_BLANK, "Выбрать несколько",
-                       lambda: self._start_select_with(app["id"])),
-            menus.item(ft.Icons.VISIBILITY if app.get("hidden") else ft.Icons.VISIBILITY_OFF,
-                       "Показывать снова" if app.get("hidden") else "Скрыть из сетки",
-                       lambda: self._hide_apps([app["id"]], not app.get("hidden"))),
-            menus.separator(),
-            menus.item(ft.Icons.DELETE_OUTLINE, "Убрать из библиотеки",
-                       lambda: self._remove_apps([app["id"]]), danger=True),
-        ]
-        self.menu.show(x, y, rows, header=menus.app_header(self, app, running))
+        self._select_tile(app["id"])
 
     def _select_mode_menu(self, app, e):
         """ПКМ по плитке в режиме выбора.
@@ -1741,8 +1733,10 @@ class CenturioUI:
                                "set", self._set_submenu(ids), y), submenu=True),
                 menus.item(ft.Icons.STAR_BORDER, "В избранное",
                            lambda: self._bulk_favorite(ids)),
-                menus.item(ft.Icons.VISIBILITY_OFF, "Скрыть из сетки",
-                           lambda: self._hide_apps(ids, True)),
+                menus.item(ft.Icons.VISIBILITY if self.filter == "hidden"
+                           else ft.Icons.VISIBILITY_OFF,
+                           "Показать" if self.filter == "hidden" else "Скрыть из сетки",
+                           lambda: self._hide_apps(ids, self.filter != "hidden")),
                 menus.item(ft.Icons.DELETE_OUTLINE, f"Убрать · {len(ids)}",
                            lambda: self._remove_apps(ids), danger=True),
             ]
@@ -1765,8 +1759,10 @@ class CenturioUI:
                        lambda: self.menu.toggle_submenu("set", self._set_submenu(ids), y),
                        submenu=True),
             menus.item(ft.Icons.STAR_BORDER, "В избранное", lambda: self._bulk_favorite(ids)),
-            menus.item(ft.Icons.VISIBILITY_OFF, "Скрыть из сетки",
-                       lambda: self._hide_apps(ids, True)),
+            menus.item(ft.Icons.VISIBILITY if self.filter == "hidden"
+                       else ft.Icons.VISIBILITY_OFF,
+                       "Показать" if self.filter == "hidden" else "Скрыть из сетки",
+                       lambda: self._hide_apps(ids, self.filter != "hidden")),
             menus.separator(),
             menus.item(ft.Icons.DELETE_OUTLINE, f"Убрать · {count}",
                        lambda: self._remove_apps(ids), danger=True),
@@ -1906,6 +1902,23 @@ class CenturioUI:
         x, y = self._menu_at(e)
         self.menu.show(x, y, self._category_submenu([app["id"]]),
                        header=menus.text_header("Переложить в…"))
+
+    def _add_to_set_menu(self, app, e):
+        x, y = self._menu_at(e)
+        self.menu.show(x, y, self._set_submenu([app["id"]]),
+                       header=menus.text_header("Добавить в набор"))
+
+    def _launch_more_menu(self, app, e):
+        """«Ещё способы запуска»: то, что раньше жило в контекстном меню
+        плитки — второе окно и запуск от администратора."""
+        x, y = self._menu_at(e)
+        rows = [
+            menus.item(ft.Icons.ADD, "Открыть ещё окно",
+                       lambda: self._launch(app["id"], again=True)),
+            menus.item(ft.Icons.SHIELD, "От имени администратора",
+                       lambda: self._launch(app["id"], as_admin=True)),
+        ]
+        self.menu.show(x, y, rows, header=None)
 
     def _bulk_menu(self, kind: str):
         """Меню из плавающей панели — открывается вверх, над самой панелью."""
@@ -2176,17 +2189,18 @@ class CenturioUI:
         self.refresh()
 
     def _tile_tap(self, app_id, ids, e=None):
-        """Клик по плитке.
+        """Клик по плитке — запускает программу.
 
-        В режиме выбора клик отмечает одну. Ctrl и Shift читаются из события,
-        если движок их вообще сообщает: в Flet 0.28 у события тапа модификаторов
-        нет, поэтому «включить режим» и «взять диапазон» есть ещё и в меню по
-        правой кнопке — на них и рассчитан мышиный путь.
+        В режиме выбора клик отмечает одну, а не запускает. Ctrl и Shift
+        читаются из события, если движок их вообще сообщает: в Flet 0.28 у
+        события тапа модификаторов нет, поэтому «включить режим» и «взять
+        диапазон» есть ещё и в меню по правой кнопке — на них и рассчитан
+        мышиный путь.
         """
         ctrl = bool(getattr(e, "ctrl", False)) if e is not None else False
         shift = bool(getattr(e, "shift", False)) if e is not None else False
         if not self.view.select_mode and not (ctrl or shift):
-            self._select_tile(app_id)
+            self._launch(app_id)
             return
         if not self.view.select_mode:
             self.view.enter_select_mode()
@@ -2194,12 +2208,6 @@ class CenturioUI:
             self.view.select_range(ids, app_id)
         else:
             self.view.toggle_selection(app_id)
-        self.refresh()
-
-    def _start_select_with(self, app_id):
-        """«Выбрать несколько» по правой кнопке: режим и эта плитка отмечена."""
-        self.view.enter_select_mode()
-        self.view.toggle_selection(app_id)
         self.refresh()
 
     def _toggle_pick(self, app_id):
@@ -2216,11 +2224,6 @@ class CenturioUI:
         # "Параметры запуска" opens by itself when there is something in it.
         self.view.adv = bool(app and (app.get("args") or app.get("run_as_admin")
                                       or app.get("working_dir")))
-        self.refresh()
-
-    def _open_advanced(self, app_id):
-        self.view.select_one(app_id)
-        self.view.adv = True
         self.refresh()
 
     def _drag_ids(self, app_id):
