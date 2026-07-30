@@ -11,11 +11,6 @@ build/
 dist/
 *.spec
 
-# Generated icons (produced at runtime by app/iconify.py)
-assets/icon.png
-assets/tray.png
-assets/tray-16.png
-
 # Editor / OS
 .DS_Store
 Thumbs.db
