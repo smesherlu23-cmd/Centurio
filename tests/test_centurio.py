@@ -1572,8 +1572,8 @@ def _tap_mods(ctrl=False, shift=False):
                     kind="mouse", ctrl=ctrl, shift=shift, alt=False, meta=False)
 
 
-def _key(name, ctrl=False, shift=False, alt=False):
-    return types_ns(key=name, ctrl=ctrl, alt=alt, shift=shift, meta=False)
+def _key(name, ctrl=False, shift=False, alt=False, meta=False):
+    return types_ns(key=name, ctrl=ctrl, alt=alt, shift=shift, meta=meta)
 
 
 def _menu_labels(ui):
@@ -2783,6 +2783,53 @@ def test_ui_keyboard():
         ok(store.get_app(ids[0])["hotkey"] == "Ctrl+Shift+G",
            "a combination already claimed by the launch hotkey is refused for a program")
         ok("Centurio" in ui.toast.text.value, "and the toast names what already has it")
+
+        # Пока идёт запись, общий слушатель приостановлен: он глобальный и не
+        # смотрит, какое окно в фокусе, так что старая комбинация (включая ту
+        # самую, что сейчас меняют) могла бы сработать посреди набора новой.
+        calls = []
+        ui.controllers["suspend_hotkeys"] = lambda: calls.append("suspend")
+        ui.controllers["resume_hotkeys"] = lambda: calls.append("resume")
+        ui.view.select_one(ids[1])
+        ui._begin_capture()
+        ok(calls == ["suspend"], "starting a capture suspends the global listener")
+        ui.handle_key(_key("H", ctrl=True))
+        ok(calls == ["suspend", "resume"],
+           "finishing it resumes it — whether or not the combination was accepted")
+
+        calls.clear()
+        ui._begin_capture()
+        ui.handle_key(_key("Escape"))
+        ok(calls == ["suspend", "resume"], "cancelling with Esc resumes it too")
+
+        calls.clear()
+        ui._begin_capture()
+        ui.handle_key(_key("F4", alt=True))
+        ok(calls == ["suspend"],
+           "a refused Windows combination does not resume it — capture is still open")
+        ui.handle_key(_key("Escape"))
+
+        # Любые клавиши: без модификатора тоже, и Win считается модификатором.
+        ui.view.select_one(ids[2])
+        ui._begin_capture()
+        ui.handle_key(_key("F9"))
+        ok(store.get_app(ids[2])["hotkey"] == "F9",
+           "a bare key with no modifier at all is accepted now")
+
+        ui.view.select_one(ids[0])
+        ui._begin_capture()
+        ui.handle_key(_key("K", meta=True))
+        ok(store.get_app(ids[0])["hotkey"] == "Win+K", "and Win counts as a modifier too")
+
+        # Записанный хоткей программы сразу перерегистрируется — раньше только
+        # запись сохранялась, а глобальный слушатель обновлялся лишь при
+        # следующем случайном изменении библиотеки.
+        registered = []
+        ui.controllers["on_library_changed"] = lambda: registered.append(1)
+        ui.view.select_one(ids[1])
+        ui._begin_capture()
+        ui.handle_key(_key("J", ctrl=True))
+        ok(registered, "setting a program's hotkey re-registers the global listener")
 
         hidden = []
         ui.controllers["hide_to_tray"] = lambda: hidden.append(1)
