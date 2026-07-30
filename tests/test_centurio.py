@@ -2821,6 +2821,17 @@ def test_ui_keyboard():
         ui.handle_key(_key("K", meta=True))
         ok(store.get_app(ids[0])["hotkey"] == "Win+K", "and Win counts as a modifier too")
 
+        # Flet сообщает пробел как буквальный " ", а не именем "Space", как
+        # остальные именованные клавиши (Enter, Tab, Escape). Без нормализации
+        # это " " схлопывалось до пустой строки везде ниже по цепочке (и
+        # format_accel, и to_pynput отбрасывают пустые токены), так что
+        # «Ctrl+Пробел» на экране превращался просто в «Ctrl».
+        ui.view.select_one(ids[1])
+        ui._begin_capture()
+        ui.handle_key(_key(" ", ctrl=True))
+        ok(store.get_app(ids[1])["hotkey"] == "Ctrl+Space",
+           "the space bar is recorded by name, not as a literal space")
+
         # Записанный хоткей программы сразу перерегистрируется — раньше только
         # запись сохранялась, а глобальный слушатель обновлялся лишь при
         # следующем случайном изменении библиотеки.

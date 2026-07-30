@@ -2030,7 +2030,11 @@ class CenturioUI:
         return False
 
     def _capture_key(self, e):
-        key = e.key or ""
+        # Flet reports the space bar as a literal " ", not the name "Space"
+        # every other named key gets — left as-is, it strips to nothing
+        # everywhere downstream (format_accel, to_pynput both drop empty
+        # tokens), so "Ctrl+Space" silently became just "Ctrl".
+        key = "Space" if e.key == " " else (e.key or "")
         if key in ("Control", "Alt", "Shift", "Meta"):
             return
         if key == "Escape":
