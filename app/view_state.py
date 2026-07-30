@@ -3,20 +3,20 @@ from __future__ import annotations
 from . import queries
 
 MODE_KEYS = ("grid", "list")
-WINDOWS = ("launch", "library")
 SCREENS = ("grid", "add", "settings", "triage")
+PALETTE_FOCUS = ("results", "actions")
 
 
 class ViewState:
     """What the window knows that isn't in the library file.
 
-    The original view (filter/query/sort/mode/selection) is unchanged — the
-    library layout it drives didn't change either. Everything below the marker
-    is what the redesign added: the second window mode, the screens that
-    replaced modal dialogs, the inspector and the context menu.
+    There is one window now. What used to be the «Запуск» window is the search
+    palette — a layer over the library — so the state below describes one screen
+    with things open on top of it: the palette, the inspector, the bulk-select
+    mode and the open set.
     """
 
-    def __init__(self, store, window: str = "library"):
+    def __init__(self, store):
         self.store = store
         # One snapshot, not two: store.state() deep-copies the whole library.
         state = store.state()
@@ -28,20 +28,28 @@ class ViewState:
         self.mode = s.get("view_mode") if s.get("view_mode") in MODE_KEYS else "grid"
         self.sidebar_open = True
         self.selected = -1
-
-        # ---- добавлено редизайном ----
-        self.window = window if window in WINDOWS else "library"
         self.screen = "grid"
 
-        # «Запуск»
-        self.launch_query = ""
-        self.hi = 0
+        # Палитра поиска — то, чем заменилось окно «Запуск».
+        self.palette_open = False
+        self.palette_index = 0
+        self.palette_focus = "results"
 
         # Инспектор и выбор
         self.inspector: str | None = None
         self.sel: list[str] = []
         self.adv = False
         self.capture = False
+
+        # Массовые операции
+        self.select_mode = False
+        self.selection_anchor: str | None = None
+
+        # Открытый набор (экран раскладки) и свёрнутые секции
+        self.active_set: str | None = None
+        collapsed = s.get("collapsed")
+        self.collapsed: set[str] = {c for c in collapsed if isinstance(c, str)} \
+            if isinstance(collapsed, list) else set()
 
         # Поповер категории
         self.popover: str | None = None
@@ -59,7 +67,7 @@ class ViewState:
     def is_all_view(self):
         """True only for the real "all apps" view.
 
-        Drives the rail's "Главное меню" highlight, which used to light up for
+        Drives the rail's `grid_view` highlight, which used to light up for
         favourites/recent/running too — those are sidebar filters and have
         their own highlight there.
         """
@@ -74,16 +82,16 @@ class ViewState:
 
     def set_filter(self, f):
         self.filter = f
-        self.query = ""
         self.selected = -1
         self.screen = "grid"
+        self.active_set = None
         self.close_inspector()
         self.persist()
 
     def set_query(self, q):
         self.query = q
-        self.selected = -1
-        self.clear_selection()
+        self.palette_index = 0
+        self.palette_focus = "results"
 
     def set_mode(self, m):
         self.mode = m
@@ -116,55 +124,101 @@ class ViewState:
         cur = self.selected if self.selected >= 0 else (-1 if delta > 0 else 0)
         self.selected = max(0, min(count - 1, cur + delta))
 
-    # ---- окно и экраны ----
-    def set_window(self, window: str):
-        if window in WINDOWS:
-            self.window = window
-            if window == "launch":
-                self.hi = 0
-
+    # ---- экраны ----
     def set_screen(self, screen: str):
         if screen in SCREENS:
             self.screen = screen
+            self.active_set = None
+            self.close_palette()
             self.close_inspector()
 
-    # ---- «Запуск» ----
-    def set_launch_query(self, q: str):
-        self.launch_query = q
-        self.hi = 0
+    def open_set(self, set_id: str):
+        self.active_set = set_id
+        self.screen = "grid"
+        self.close_palette()
+        self.close_inspector()
 
-    def move_hi(self, delta: int, count: int):
+    def close_set(self):
+        self.active_set = None
+
+    # ---- палитра ----
+    def open_palette(self):
+        self.palette_open = True
+        self.palette_index = 0
+        self.palette_focus = "results"
+
+    def close_palette(self):
+        self.palette_open = False
+        self.query = ""
+        self.palette_index = 0
+        self.palette_focus = "results"
+
+    def move_palette(self, delta: int, count: int):
         if count <= 0:
-            self.hi = 0
+            self.palette_index = 0
             return
-        self.hi = max(0, min(count - 1, self.hi + delta))
+        self.palette_index = max(0, min(count - 1, self.palette_index + delta))
+
+    def focus_palette_actions(self, count: int):
+        """Tab: to the actions of the highlighted program, and back."""
+        if self.palette_focus == "results" and count:
+            self.palette_focus = "actions"
+            self.palette_index = 0
+        else:
+            self.palette_focus = "results"
+            self.palette_index = 0
 
     # ---- выбор плиток ----
     def clear_selection(self):
         self.sel = []
+        self.selection_anchor = None
 
     def select_one(self, app_id: str):
         self.sel = [app_id]
         self.inspector = app_id
+        self.selection_anchor = app_id
 
     def toggle_selection(self, app_id: str):
         if app_id in self.sel:
             self.sel = [i for i in self.sel if i != app_id]
         else:
             self.sel = self.sel + [app_id]
-        self.inspector = self.sel[-1] if self.sel else None
+        self.selection_anchor = app_id
+        if not self.select_mode:
+            self.inspector = self.sel[-1] if self.sel else None
 
     def select_many(self, app_ids):
         for app_id in app_ids:
             if app_id not in self.sel:
                 self.sel.append(app_id)
-        if self.sel:
+        if self.sel and not self.select_mode:
             self.inspector = self.sel[-1]
+
+    def select_range(self, app_ids, app_id):
+        """Shift+click: everything between the anchor and here, inclusive."""
+        ids = list(app_ids)
+        if app_id not in ids:
+            return
+        anchor = self.selection_anchor if self.selection_anchor in ids else app_id
+        lo, hi = sorted((ids.index(anchor), ids.index(app_id)))
+        self.select_many(ids[lo:hi + 1])
+
+    def enter_select_mode(self):
+        self.select_mode = True
+        self.inspector = None
+        self.capture = False
+        self.close_palette()
+
+    def leave_select_mode(self):
+        self.select_mode = False
+        self.clear_selection()
 
     def drop_missing(self, live_ids):
         """Forget ids the library no longer has (deleted, undone, rescanned)."""
         live = set(live_ids)
         self.sel = [i for i in self.sel if i in live]
+        if self.selection_anchor not in live:
+            self.selection_anchor = None
         if self.inspector not in live:
             self.inspector = None
             self.capture = False
@@ -173,6 +227,14 @@ class ViewState:
         self.inspector = None
         self.capture = False
         self.clear_selection()
+
+    # ---- свёрнутые секции ----
+    def toggle_section(self, cid: str):
+        if cid in self.collapsed:
+            self.collapsed.discard(cid)
+        else:
+            self.collapsed.add(cid)
+        self.store.set_setting("collapsed", sorted(self.collapsed))
 
     # ---- поповер категории ----
     def open_popover(self, cat_id: str):
@@ -211,15 +273,20 @@ class ViewState:
         if self.capture:
             self.capture = False
             return True
+        if self.palette_open:
+            self.close_palette()
+            return True
+        if self.select_mode:
+            self.leave_select_mode()
+            return True
         if self.screen != "grid":
             self.set_screen("grid")
             return True
+        if self.active_set:
+            self.close_set()
+            return True
         if self.inspector or self.sel:
             self.close_inspector()
-            return True
-        if self.query:
-            self.query = ""
-            self.selected = -1
             return True
         if self.selected >= 0:
             self.selected = -1

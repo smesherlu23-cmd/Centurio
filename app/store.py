@@ -9,18 +9,27 @@ import time
 import uuid
 from pathlib import Path
 
+from . import layout as L
 from . import log
 
+# Цвета — из макета редизайна. Раньше все четыре были "#ffffff" и различались
+# только тем, что colors.palette_color() выбирал по хешу имени.
 DEFAULT_CATEGORIES = [
-    {"id": "work", "name": "Работа", "icon": "work", "color": "#ffffff", "order": 0},
-    {"id": "create", "name": "Творчество", "icon": "brush", "color": "#ffffff", "order": 1},
-    {"id": "games", "name": "Игры", "icon": "sports_esports", "color": "#ffffff", "order": 2},
-    {"id": "dev", "name": "Разработка", "icon": "code", "color": "#ffffff", "order": 3},
+    {"id": "work", "name": "Работа", "icon": "work", "color": "#4f7dff", "order": 0},
+    {"id": "create", "name": "Творчество", "icon": "brush", "color": "#b98cff", "order": 1},
+    {"id": "games", "name": "Игры", "icon": "sports_esports", "color": "#3ecfaf", "order": 2},
+    {"id": "dev", "name": "Разработка", "icon": "code", "color": "#ff9f6e", "order": 3},
 ]
 
-# The combination that shows and hides the "Запуск" window. Stored so the
-# settings screen can rebind it; the format is the one hotkeys.to_pynput reads.
+# The combination that raises the window and opens the search palette. Stored so
+# the settings screen can rebind it; the format is the one to_pynput reads. The
+# key is still called launch_hotkey — it is the same setting users already have,
+# only the window it summons is now the library itself.
 DEFAULT_LAUNCH_HOTKEY = "Ctrl+Space"
+
+# Пауза между запусками программ набора, секунды.
+DEFAULT_SET_DELAY = 2.0
+MAX_SET_DELAY = 30.0
 
 DEFAULT_SETTINGS = {
     "autostart": False,
@@ -45,9 +54,11 @@ DEFAULT_SETTINGS = {
     "hide_after": True,      # прятать окно после запуска
     "triage": True,          # складывать новое в разбор
     "calm": False,           # «Спокойный вид»
-    "hints": True,           # строка подсказок в «Запуске»
+    "hints": True,           # строка подсказок в палитре поиска
     "debug_log": False,
     "onboarded": False,
+    # Свёрнутые секции категорий — список id, живёт между запусками.
+    "collapsed": [],
 }
 
 
@@ -80,6 +91,8 @@ def _clean_app(item, index: int) -> dict | None:
     rec["name"] = name.strip() if isinstance(name, str) and name.strip() else "Без названия"
     rec["path"] = rec["path"] if isinstance(rec.get("path"), str) else ""
     rec["order"] = _as_int(rec.get("order"), index)
+    # «Скрыть» из массовых операций: запись остаётся, но в сетке её нет.
+    rec["hidden"] = bool(rec.get("hidden"))
     for key in ("added_at", "last_launched", "launch_count"):
         rec[key] = _as_int(rec.get(key))
     hue = _as_int(rec.get("hue"), -1)
@@ -103,8 +116,47 @@ def _clean_category(item, index: int) -> dict | None:
     return rec
 
 
+def _clean_layout(raw) -> dict:
+    raw = raw if isinstance(raw, dict) else {}
+    return {"preset": L.valid_preset(raw.get("preset")),
+            "split": L.clamp(raw.get("split", L.DEFAULT_SPLIT), L.MIN_SPLIT, L.MAX_SPLIT),
+            "vsplit": L.clamp(raw.get("vsplit", L.DEFAULT_VSPLIT), L.MIN_SPLIT, L.MAX_SPLIT)}
+
+
+def _clean_item(raw, preset: str, index: int) -> dict | None:
+    """One member of a set: which program, where it goes, whether it is minimised.
+
+    A missing "slot" key means the record predates layouts (version 2 stored
+    bare ids), and the member takes the place its position implies. An explicit
+    null means the user took its place away, and stays null — the two cases
+    have to be told apart or every load would undo that choice.
+    """
+    if isinstance(raw, str):
+        raw = {"app_id": raw}
+    if not isinstance(raw, dict):
+        return None
+    app_id = raw.get("app_id")
+    if not isinstance(app_id, str) or not app_id:
+        return None
+    count = L.slot_count(preset)
+    if "slot" in raw:
+        slot = raw["slot"]
+        if not isinstance(slot, int) or isinstance(slot, bool) or not 0 <= slot < count:
+            slot = None
+    else:
+        slot = index if index < count else None
+    return {"app_id": app_id, "slot": slot, "minimized": bool(raw.get("minimized")),
+            "rect": list(L.normal_rect(raw.get("rect")) or []) or None}
+
+
 def _clean_set(item, index: int) -> dict | None:
-    """One app set: several programs behind a single card."""
+    """One app set: several programs, one hotkey, one window layout.
+
+    Version 2 stored `apps` — a plain list of ids. Version 3 stores `items`,
+    each carrying its place in the layout, and keeps `apps` as a derived mirror
+    so everything that only needs "who is in it" keeps working. The mirror is
+    recomputed on every read and write; it is never the source of truth.
+    """
     if not isinstance(item, dict):
         return None
     set_id = item.get("id")
@@ -114,10 +166,75 @@ def _clean_set(item, index: int) -> dict | None:
     rec["id"] = set_id
     name = rec.get("name")
     rec["name"] = name.strip() if isinstance(name, str) and name.strip() else "Набор"
-    raw_apps = rec.get("apps")
-    rec["apps"] = [a for a in raw_apps if isinstance(a, str)] if isinstance(raw_apps, list) else []
     rec["order"] = _as_int(rec.get("order"), index)
     rec["quick"] = bool(rec.get("quick"))
+    rec["layout"] = _clean_layout(rec.get("layout"))
+    hotkey = rec.get("hotkey")
+    rec["hotkey"] = hotkey.strip() if isinstance(hotkey, str) and hotkey.strip() else None
+    rec["monitor"] = max(0, _as_int(rec.get("monitor")))
+    rec["close_together"] = bool(rec.get("close_together"))
+    delay = rec.get("delay_seconds", DEFAULT_SET_DELAY)
+    try:
+        rec["delay_seconds"] = max(0.0, min(MAX_SET_DELAY, float(delay)))
+    except (TypeError, ValueError):
+        rec["delay_seconds"] = DEFAULT_SET_DELAY
+
+    raw_items = rec.get("items")
+    if not isinstance(raw_items, list):
+        raw_items = rec.get("apps") if isinstance(rec.get("apps"), list) else []
+    preset = rec["layout"]["preset"]
+    items: list[dict] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        entry = _clean_item(raw, preset, len(items))
+        if entry is None or entry["app_id"] in seen:
+            continue
+        seen.add(entry["app_id"])
+        items.append(entry)
+    rec["items"] = items
+    return _mirror_items(rec)
+
+
+def _mirror_items(rec: dict) -> dict:
+    """Keep rec["apps"] equal to the ids in rec["items"]."""
+    rec["apps"] = [i["app_id"] for i in rec.get("items", [])]
+    return rec
+
+
+def _fit_slots(rec: dict) -> dict:
+    """Drop places the current preset no longer has, and free duplicates."""
+    count = L.slot_count(rec["layout"]["preset"])
+    taken: set[int] = set()
+    for entry in rec["items"]:
+        slot = entry.get("slot")
+        if not isinstance(slot, int) or slot >= count or slot in taken:
+            entry["slot"] = None
+        else:
+            taken.add(slot)
+    return rec
+
+
+def _free_slot(rec: dict):
+    """The lowest place in the layout nobody occupies, or None when it is full."""
+    count = L.slot_count(rec["layout"]["preset"])
+    taken = {i.get("slot") for i in rec["items"] if isinstance(i.get("slot"), int)}
+    return next((i for i in range(count) if i not in taken), None)
+
+
+def _refill_slots(rec: dict) -> dict:
+    """Hand out the places a new preset opened up.
+
+    Choosing a preset is a "lay this out again" gesture, so a member left
+    without a place — because the previous preset had fewer of them, or because
+    the user took its place away under that preset — gets one of the new ones.
+    Minimised members and ones with a captured rect keep what they have.
+    """
+    for entry in rec["items"]:
+        if entry.get("minimized") or entry.get("rect") or entry.get("slot") is not None:
+            continue
+        entry["slot"] = _free_slot(rec)
+        if entry["slot"] is None:
+            break
     return rec
 
 
@@ -191,7 +308,7 @@ class Store:
 
     def _defaults(self) -> dict:
         return {
-            "version": 2,
+            "version": 3,
             "categories": copy.deepcopy(DEFAULT_CATEGORIES),
             "apps": [],
             "sets": [],
@@ -226,7 +343,8 @@ class Store:
         timestamp belongs, settings that aren't even an object).
 
         It doubles as the migration: a file written by an older version has no
-        "sets" and no "inbox", and comes back with them empty.
+        "sets" and no "inbox", and comes back with them empty; a version-2 set
+        carried a plain list of ids and comes back with a window layout.
         """
         cats = _clean_records(parsed.get("categories"), _clean_category)
         apps = _clean_records(parsed.get("apps"), _clean_app)
@@ -235,15 +353,16 @@ class Store:
         for rec in sets:
             # A set that outlived the programs in it would launch nothing and
             # still count them.
-            rec["apps"] = [aid for aid in rec["apps"] if aid in known]
+            rec["items"] = [i for i in rec["items"] if i["app_id"] in known]
+            _fit_slots(_mirror_items(rec))
         have = {(a.get("path") or "").lower() for a in apps}
         inbox = [i for i in _clean_records(parsed.get("inbox"), _clean_inbox)
                  if i["path"].lower() not in have]
         return {
-            "version": 2,
+            "version": 3,
             "categories": cats or copy.deepcopy(DEFAULT_CATEGORIES),
             "apps": apps,
-            "sets": [s for s in sets if s["apps"]],
+            "sets": [s for s in sets if s["items"]],
             "inbox": inbox,
             "settings": _clean_settings(parsed.get("settings")),
         }
@@ -320,6 +439,7 @@ class Store:
                 "poster": app.get("poster") or None,
                 "favorite": bool(app.get("favorite")),
                 "quick": bool(app.get("quick")),
+                "hidden": bool(app.get("hidden")),
                 "hotkey": app.get("hotkey") or None,
                 "track_exe": app.get("track_exe") or None,
                 "order": app["order"] if isinstance(app.get("order"), int) else len(self.data["apps"]),
@@ -346,8 +466,8 @@ class Store:
             if not app:
                 return None
             for key in ("name", "path", "args", "working_dir", "run_as_admin", "sub", "category_id",
-                        "hue", "icon", "icon_fit", "poster", "favorite", "quick", "hotkey",
-                        "track_exe", "order"):
+                        "hue", "icon", "icon_fit", "poster", "favorite", "quick", "hidden",
+                        "hotkey", "track_exe", "order"):
                 if key in patch:
                     app[key] = patch[key]
             if persist:
@@ -394,8 +514,9 @@ class Store:
                 return []
             self.data["apps"] = [a for a in self.data["apps"] if a["id"] not in wanted]
             for rec in self.data["sets"]:
-                rec["apps"] = [aid for aid in rec["apps"] if aid not in wanted]
-            self.data["sets"] = [s for s in self.data["sets"] if s["apps"]]
+                rec["items"] = [i for i in rec["items"] if i["app_id"] not in wanted]
+                _mirror_items(rec)
+            self.data["sets"] = [s for s in self.data["sets"] if s["items"]]
             self._persist()
             return copy.deepcopy(gone)
 
@@ -509,8 +630,11 @@ class Store:
             members = [aid for aid in dict.fromkeys(app_ids) if aid in known]
             if not members:
                 return None
-            rec = {"id": str(uuid.uuid4()), "name": (name or "").strip() or "Набор",
-                   "apps": members, "quick": bool(quick), "order": len(self.data["sets"])}
+            rec = _clean_set({"id": str(uuid.uuid4()),
+                              "name": (name or "").strip() or "Набор",
+                              "items": [{"app_id": aid} for aid in members],
+                              "quick": bool(quick), "order": len(self.data["sets"])},
+                             len(self.data["sets"]))
             self.data["sets"].append(rec)
             self._persist()
             return copy.deepcopy(rec)
@@ -521,19 +645,137 @@ class Store:
             return copy.deepcopy(found) if found else None
 
     def update_set(self, set_id: str, patch: dict) -> dict | None:
+        """Patch one set. `apps` replaces the membership, `items` the whole list.
+
+        Passing `apps` is the short form the context menus use: ids that are
+        already in the set keep their place in the layout, new ones take the
+        first free one, and anything not listed goes.
+        """
         with self._lock:
             rec = next((s for s in self.data["sets"] if s["id"] == set_id), None)
             if not rec:
                 return None
+            known = {a["id"] for a in self.data["apps"]}
             if "name" in patch:
                 rec["name"] = (patch["name"] or "").strip() or rec["name"]
             if "quick" in patch:
                 rec["quick"] = bool(patch["quick"])
+            if "hotkey" in patch:
+                hk = (patch["hotkey"] or "").strip() if isinstance(patch["hotkey"], str) else ""
+                rec["hotkey"] = hk or None
+            if "monitor" in patch:
+                rec["monitor"] = max(0, _as_int(patch["monitor"]))
+            if "close_together" in patch:
+                rec["close_together"] = bool(patch["close_together"])
+            if "delay_seconds" in patch:
+                try:
+                    rec["delay_seconds"] = max(0.0, min(MAX_SET_DELAY,
+                                                        float(patch["delay_seconds"])))
+                except (TypeError, ValueError):
+                    pass
+            preset_changed = False
+            if "layout" in patch:
+                merged = dict(rec["layout"])
+                merged.update(patch["layout"] if isinstance(patch["layout"], dict) else {})
+                before = rec["layout"]["preset"]
+                rec["layout"] = _clean_layout(merged)
+                preset_changed = rec["layout"]["preset"] != before
+            if "items" in patch:
+                raw = patch["items"] if isinstance(patch["items"], list) else []
+                items = []
+                for entry in raw:
+                    clean = _clean_item(entry, rec["layout"]["preset"], len(items))
+                    if clean and clean["app_id"] in known:
+                        items.append(clean)
+                rec["items"] = items
             if "apps" in patch:
-                known = {a["id"] for a in self.data["apps"]}
-                rec["apps"] = [aid for aid in dict.fromkeys(patch["apps"] or []) if aid in known]
+                wanted = [aid for aid in dict.fromkeys(patch["apps"] or []) if aid in known]
+                by_id = {i["app_id"]: i for i in rec["items"]}
+                rec["items"] = [by_id[aid] for aid in wanted if aid in by_id]
+                for aid in wanted:
+                    if aid in by_id:
+                        continue
+                    rec["items"].append({"app_id": aid, "slot": _free_slot(rec),
+                                         "minimized": False, "rect": None})
+            _fit_slots(_mirror_items(rec))
+            if preset_changed:
+                _refill_slots(rec)
             self._persist()
             return copy.deepcopy(rec)
+
+    def update_set_item(self, set_id: str, app_id: str, patch: dict) -> dict | None:
+        """One member of one set: its place, or whether it starts minimised."""
+        with self._lock:
+            rec = next((s for s in self.data["sets"] if s["id"] == set_id), None)
+            if not rec:
+                return None
+            entry = next((i for i in rec["items"] if i["app_id"] == app_id), None)
+            if entry is None:
+                return None
+            if "slot" in patch:
+                slot = patch["slot"]
+                count = L.slot_count(rec["layout"]["preset"])
+                entry["slot"] = slot if isinstance(slot, int) and 0 <= slot < count else None
+                if entry["slot"] is not None:
+                    # Одно место — одна программа: прежний хозяин его теряет.
+                    for other in rec["items"]:
+                        if other is not entry and other.get("slot") == entry["slot"]:
+                            other["slot"] = None
+                    entry["rect"] = None
+            if "minimized" in patch:
+                entry["minimized"] = bool(patch["minimized"])
+                if entry["minimized"]:
+                    entry["slot"] = None
+                    entry["rect"] = None
+            if "rect" in patch:
+                rect = L.normal_rect(patch["rect"])
+                entry["rect"] = list(rect) if rect else None
+            self._persist()
+            return copy.deepcopy(rec)
+
+    def reorder_set_items(self, set_id: str, ordered_ids) -> dict | None:
+        """Put the members in this order — what dragging a row lands on.
+
+        Ids the set doesn't have are ignored, and anything the caller forgot
+        keeps its place at the end, so a stale drag can't lose a member.
+        """
+        with self._lock:
+            rec = next((s for s in self.data["sets"] if s["id"] == set_id), None)
+            if not rec:
+                return None
+            by_id = {i["app_id"]: i for i in rec["items"]}
+            order = [aid for aid in dict.fromkeys(ordered_ids) if aid in by_id]
+            rec["items"] = ([by_id[aid] for aid in order]
+                            + [i for i in rec["items"] if i["app_id"] not in set(order)])
+            _mirror_items(rec)
+            self._persist()
+            return copy.deepcopy(rec)
+
+    def move_set_item(self, set_id: str, app_id: str, delta: int) -> dict | None:
+        """Reorder «Порядок запуска» — the order the programs actually start in."""
+        with self._lock:
+            rec = next((s for s in self.data["sets"] if s["id"] == set_id), None)
+            if not rec:
+                return None
+            ids = [i["app_id"] for i in rec["items"]]
+            if app_id not in ids:
+                return None
+            i = ids.index(app_id)
+            j = max(0, min(len(ids) - 1, i + delta))
+            if i == j:
+                return copy.deepcopy(rec)
+            rec["items"].insert(j, rec["items"].pop(i))
+            _mirror_items(rec)
+            self._persist()
+            return copy.deepcopy(rec)
+
+    def reorder_sets(self, ordered_ids: list[str]) -> None:
+        with self._lock:
+            pos = {sid: i for i, sid in enumerate(ordered_ids)}
+            for rec in self.data["sets"]:
+                if rec["id"] in pos:
+                    rec["order"] = pos[rec["id"]]
+            self._persist()
 
     def remove_set(self, set_id: str) -> dict | None:
         with self._lock:
@@ -550,7 +792,14 @@ class Store:
         with self._lock:
             if any(s["id"] == record["id"] for s in self.data["sets"]):
                 return False
-            self.data["sets"].append(copy.deepcopy(record))
+            rec = _clean_set(copy.deepcopy(record), len(self.data["sets"]))
+            if rec is None:
+                return False
+            known = {a["id"] for a in self.data["apps"]}
+            rec["items"] = [i for i in rec["items"] if i["app_id"] in known]
+            if not rec["items"]:
+                return False
+            self.data["sets"].append(_mirror_items(rec))
             self.data["sets"].sort(key=lambda s: s.get("order", 0))
             self._persist()
             return True

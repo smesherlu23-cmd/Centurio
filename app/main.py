@@ -11,7 +11,8 @@ import flet as ft
 from app import autostart, log
 from app import colors as C
 from app.debounce import Debounce
-from app.hotkeys import TOGGLE_LAUNCH, HotkeyManager, app_for_accel, quick_bindings
+from app.hotkeys import (TOGGLE_SEARCH, HotkeyManager, app_for_accel, quick_bindings,
+                         set_bindings, set_for_accel, split_binding)
 from app.iconify import ensure_icons
 from app.launcher import Launcher
 from app.store import DEFAULT_LAUNCH_HOTKEY, Store
@@ -76,10 +77,6 @@ def main(page: ft.Page):
     }
     page.theme = ft.Theme(color_scheme_seed=C.ACCENT, font_family="Inter")
 
-    # Starting hidden means the hotkey is what brings the window back, and what
-    # it should bring back is the compact launcher.
-    start_window = "launch" if start_hidden else "library"
-
     if not is_web:
         page.window.title_bar_hidden = True
         page.window.frameless = True
@@ -98,68 +95,53 @@ def main(page: ft.Page):
                  geometry_flush=geometry_flush, toast=getattr(ui, "toast", None))
         _quit(page)
 
-    def apply_window(window: str):
-        """Size the window for the mode it is about to show."""
+    def apply_window():
+        """Restore the size and place the window was left at."""
         if is_web:
             return
         try:
-            if window == "launch":
-                page.window.maximized = False
-                page.window.resizable = False
-                page.window.min_width = C.LAUNCH_W
-                page.window.min_height = C.LAUNCH_H
-                page.window.width = C.LAUNCH_W
-                page.window.height = C.LAUNCH_H
-                page.window.center()
+            s = store.state()["settings"]
+            page.window.resizable = True
+            page.window.min_width = C.LIBRARY_MIN_W
+            page.window.min_height = C.LIBRARY_MIN_H
+            page.window.width = s.get("win_w") or C.LIBRARY_W
+            page.window.height = s.get("win_h") or C.LIBRARY_H
+            if s.get("win_x") is not None and s.get("win_y") is not None:
+                page.window.left = s["win_x"]
+                page.window.top = s["win_y"]
             else:
-                s = store.state()["settings"]
-                page.window.resizable = True
-                page.window.min_width = C.LIBRARY_MIN_W
-                page.window.min_height = C.LIBRARY_MIN_H
-                page.window.width = s.get("win_w") or C.LIBRARY_W
-                page.window.height = s.get("win_h") or C.LIBRARY_H
-                if s.get("win_x") is not None and s.get("win_y") is not None:
-                    page.window.left = s["win_x"]
-                    page.window.top = s["win_y"]
-                else:
-                    page.window.center()
-                if s.get("win_max"):
-                    page.window.maximized = True
+                page.window.center()
+            if s.get("win_max"):
+                page.window.maximized = True
             page.update()
         except Exception:
-            log.exception("resizing the window for %s failed", window)
+            log.exception("restoring the window geometry failed")
 
-    def show_window():
+    def open_search():
+        """Ctrl+Пробел и клик по значку в трее: окно наверх, курсор в поиск."""
+        ui = ui_holder.get("ui")
         _show_window(page)
-        ui = ui_holder.get("ui")
-        if ui is not None and ui.view.window == "launch":
-            ui._focus(ui.launch_field)
-
-    def open_launch():
-        ui = ui_holder.get("ui")
-        if ui is None:
-            return
-        if ui.view.window != "launch":
-            ui._open_launch()
-        show_window()
+        if ui is not None:
+            ui._focus_search()
 
     def open_library():
         ui = ui_holder.get("ui")
-        if ui is None:
-            return
-        ui._open_library()
-        show_window()
+        _show_window(page)
+        if ui is not None:
+            ui.open_library()
 
-    def toggle_launch():
-        """The global hotkey: show «Запуск», or put it away if it is up."""
+    def toggle_search():
+        """The global hotkey: raise the window with the palette, or put it away."""
         ui = ui_holder.get("ui")
         if ui is None:
             return
         visible = True if is_web else bool(page.window.visible)
-        if visible and ui.view.window == "launch":
+        if visible and ui.view.palette_open:
+            ui.view.close_palette()
+            ui.refresh()
             hide_to_tray()
         else:
-            open_launch()
+            open_search()
 
     def minimize():
         if store.state()["settings"].get("minimize_to_tray") and tray.available:
@@ -194,12 +176,17 @@ def main(page: ft.Page):
             refresh_runtime()
 
     def on_hotkey(binding_id):
-        if binding_id == TOGGLE_LAUNCH:
-            toggle_launch()
+        if binding_id == TOGGLE_SEARCH:
+            toggle_search()
             return
         ui = ui_holder.get("ui")
-        if ui is not None:
-            ui._launch(binding_id)
+        if ui is None:
+            return
+        kind, target = split_binding(binding_id)
+        if kind == "set":
+            ui._launch_set(target)
+        else:
+            ui._launch(target)
 
     hotkeys = HotkeyManager(on_trigger=on_hotkey)
 
@@ -209,14 +196,15 @@ def main(page: ft.Page):
         tray.refresh()
         if not is_web:
             bindings = [(state["settings"].get("launch_hotkey") or DEFAULT_LAUNCH_HOTKEY,
-                         TOGGLE_LAUNCH)]
+                         TOGGLE_SEARCH)]
             bindings += quick_bindings(state["apps"])
+            bindings += set_bindings(_ordered_sets(state))
             hotkeys.register(bindings)
 
     controllers = {
         "minimize": minimize, "toggle_maximize": toggle_maximize, "close": close,
         "hide_to_tray": hide_to_tray, "on_setting": on_setting,
-        "on_library_changed": refresh_runtime, "set_window": apply_window,
+        "on_library_changed": refresh_runtime,
     }
 
     def tray_menu():
@@ -225,10 +213,10 @@ def main(page: ft.Page):
                  for item in dialogs.tray_items(store)]
         return items, dialogs.library_summary(store)
 
-    tray = TrayController(icon_path, on_show=open_launch, on_quit=quit_app,
+    tray = TrayController(icon_path, on_show=open_search, on_quit=quit_app,
                           on_open_library=open_library, menu_provider=tray_menu)
 
-    ui = CenturioUI(page, store, launcher, controllers, window=start_window)
+    ui = CenturioUI(page, store, launcher, controllers)
     ui_holder["ui"] = ui
     launcher.on_change = lambda ids: ui.set_running(ids)
 
@@ -241,11 +229,18 @@ def main(page: ft.Page):
         # sees Ctrl+N as well — handling it here too would launch twice. This is
         # the fallback for when the combo isn't registered globally.
         if e.ctrl and (e.key or "").isdigit():
-            accel = f"Ctrl+{e.key}"
-            if not hotkeys.handles(accel):
-                app_id = app_for_accel(store.state()["apps"], accel)
-                if app_id:
-                    ui._launch(app_id)
+            accel = f"Ctrl+Alt+{e.key}" if e.alt else f"Ctrl+{e.key}"
+            if hotkeys.handles(accel):
+                return
+            state = store.state()
+            if e.alt:
+                set_id = set_for_accel(_ordered_sets(state), accel)
+                if set_id:
+                    ui._launch_set(set_id)
+                return
+            app_id = app_for_accel(state["apps"], accel)
+            if app_id:
+                ui._launch(app_id)
     page.on_keyboard_event = on_key
 
     def _flush_geometry():
@@ -264,10 +259,6 @@ def main(page: ft.Page):
     geometry_flush = Debounce(GEOMETRY_FLUSH_DELAY, _flush_geometry)
 
     def save_window(flush: bool = False):
-        # Only the library's geometry is worth remembering: «Запуск» is always
-        # the same size, in the middle of the screen.
-        if ui.view.window != "library":
-            return
         try:
             w, h = page.window.width, page.window.height
             maximized = page.window.maximized
@@ -292,7 +283,7 @@ def main(page: ft.Page):
             close()
     page.window.on_event = on_win_event if not is_web else None
 
-    apply_window(start_window)
+    apply_window()
     ui.mount()
 
     def _backfill():
@@ -335,6 +326,11 @@ def main(page: ft.Page):
         if start_hidden:
             _hide_window(page)
     ui.maybe_onboard()
+
+
+def _ordered_sets(state) -> list[dict]:
+    """Наборы в том порядке, в котором им раздаются Ctrl+Alt+N."""
+    return sorted(state["sets"], key=lambda s: s.get("order", 0))
 
 
 def app_paths_dir(store):

@@ -18,6 +18,11 @@ from .format import T
 PLAIN_SECONDS = 2.6
 UNDO_SECONDS = 8
 
+# Обычное место тоста и место над панелью массовых операций (она 56px на
+# отступе 26 от низа).
+BOTTOM = 70
+BOTTOM_LIFTED = 96
+
 
 class ToastHost:
     """A single toast, positioned by the caller, driven by one timer.
@@ -58,13 +63,17 @@ class ToastHost:
                                             offset=ft.Offset(0, 20), color=C.SHADOW_TOAST),
             animate_opacity=ft.Animation(C.ANIM_FAST, ft.AnimationCurve.EASE_OUT),
         )
-        # bottom=70 with left/right pinned: the toast is centred over whatever
-        # mode is on screen without knowing the window's width.
+        # bottom=BOTTOM with left/right pinned: the toast is centred over the
+        # window without knowing its width.
         self.control = ft.Container(
             ft.Row([ft.Container(self.card, width=None)],
                    alignment=ft.MainAxisAlignment.CENTER),
-            left=0, right=0, bottom=70, visible=False,
+            left=0, right=0, bottom=BOTTOM, visible=False,
         )
+
+    def lift(self, above: bool):
+        """Подняться над плавающей панелью массовых операций, если она открыта."""
+        self.control.bottom = BOTTOM_LIFTED if above else BOTTOM
 
     # ---- public ----
     def show(self, text: str, icon=ft.Icons.CHECK, icon_color=C.GREEN,

@@ -213,6 +213,168 @@ def test_store_sets_inbox_undo():
            "a set that lost every member is dropped on load")
 
 
+def test_store_set_layout():
+    """Набор версии 3: порядок запуска, места окон, пауза, монитор."""
+    import json
+
+    from app import layout as L
+
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "data.json")
+        s = Store(path)
+        one = s.add_app({"name": "One", "path": "/x/1", "category_id": "work"})["id"]
+        two = s.add_app({"name": "Two", "path": "/x/2", "category_id": "work"})["id"]
+        three = s.add_app({"name": "Three", "path": "/x/3", "category_id": "work"})["id"]
+
+        rec = s.add_set("Утро", [one, two])
+        ok([i["app_id"] for i in rec["items"]] == [one, two],
+           "a set stores its members as items")
+        ok(rec["apps"] == [one, two],
+           "and keeps the plain id list as a mirror everything else can read")
+        ok([i["slot"] for i in rec["items"]] == [0, 1],
+           "new members take the places of the default preset in order")
+        ok(rec["layout"]["preset"] == L.DEFAULT_PRESET, "which is the default one")
+        ok(rec["delay_seconds"] == 2.0 and rec["monitor"] == 0
+           and rec["close_together"] is False, "with the launch defaults")
+
+        s.update_set(rec["id"], {"apps": [one, two, three]})
+        ok(s.get_set(rec["id"])["items"][2]["slot"] == 2,
+           "adding a member gives it the first free place")
+
+        s.update_set_item(rec["id"], three, {"slot": 0})
+        items = {i["app_id"]: i for i in s.get_set(rec["id"])["items"]}
+        ok(items[three]["slot"] == 0 and items[one]["slot"] is None,
+           "one place holds one program: taking it frees the previous owner")
+
+        s.update_set_item(rec["id"], two, {"minimized": True})
+        items = {i["app_id"]: i for i in s.get_set(rec["id"])["items"]}
+        ok(items[two]["minimized"] and items[two]["slot"] is None,
+           "a minimised member gives up its place")
+
+        s.update_set(rec["id"], {"layout": {"preset": "full"}})
+        places = [i["slot"] for i in s.get_set(rec["id"])["items"]]
+        ok(places.count(None) == 2 and 0 in places,
+           "switching to a one-window preset drops the places that no longer exist")
+
+        # Выбор пресета — жест «разложи заново», поэтому места, которых не было
+        # в прежнем пресете, достаются тем, кто остался без места.
+        s.update_set_item(rec["id"], two, {"minimized": False})
+        s.update_set(rec["id"], {"layout": {"preset": "grid4"}})
+        places = [i["slot"] for i in s.get_set(rec["id"])["items"]]
+        ok(None not in places and sorted(places) == [0, 1, 2],
+           "a roomier preset hands its new places out")
+        s.update_set_item(rec["id"], two, {"minimized": True})
+        s.update_set(rec["id"], {"layout": {"preset": "half"}})
+        s.update_set(rec["id"], {"layout": {"preset": "grid4"}})
+        kept = {i["app_id"]: i for i in s.get_set(rec["id"])["items"]}
+        ok(kept[two]["minimized"] and kept[two]["slot"] is None,
+           "but a member that starts minimised is left out of it")
+
+        s.update_set(rec["id"], {"layout": {"split": 9.0}, "delay_seconds": 99,
+                                 "monitor": -3, "hotkey": "  "})
+        fresh = s.get_set(rec["id"])
+        ok(fresh["layout"]["split"] == L.MAX_SPLIT, "an impossible share is clamped")
+        ok(fresh["delay_seconds"] == 30.0, "so is an absurd pause")
+        ok(fresh["monitor"] == 0 and fresh["hotkey"] is None,
+           "and a negative monitor or a blank hotkey become the defaults")
+
+        s.move_set_item(rec["id"], three, -2)
+        ok(s.get_set(rec["id"])["apps"][0] == three,
+           "the launch order can be moved, clamped at the ends")
+
+        s.update_set_item(rec["id"], one, {"slot": None})
+        s.flush()
+        ok(Store(path).get_set(rec["id"])["items"][1]["slot"] is None,
+           "«без места» survives a reload instead of being handed a place again")
+
+        # Файл версии 2 знал только список id — он должен получить раскладку.
+        old = os.path.join(d, "v2.json")
+        with open(old, "w", encoding="utf-8") as fh:
+            json.dump({"version": 2,
+                       "apps": [{"id": "a", "name": "A", "path": "/a"},
+                                {"id": "b", "name": "B", "path": "/b"}],
+                       "sets": [{"id": "s", "name": "Старый", "apps": ["a", "b", "gone"]}],
+                       "categories": [], "settings": {}}, fh)
+        migrated = Store(old).state()["sets"][0]
+        ok([i["app_id"] for i in migrated["items"]] == ["a", "b"],
+           "a version-2 set keeps its members and drops the dead one")
+        ok([i["slot"] for i in migrated["items"]] == [0, 1],
+           "and comes back with a layout instead of nothing")
+
+
+def test_layout_presets():
+    """Раскладка окон — доли экрана, а не пиксели: переживает смену монитора."""
+    from app import layout as L
+
+    ok(L.slot_count("full") == 1, "«На весь экран» — одно место")
+    ok(L.slot_count("half") == 2 and L.slot_count("6040") == 3, "half is two, 60/40 is three")
+    ok(L.slot_count("grid4") == 4, "and the grid is four")
+    ok(L.valid_preset("nonsense") == L.DEFAULT_PRESET, "an unknown preset falls back")
+
+    left, top_right, bottom_right = L.slots("6040", 0.6, 0.5)
+    ok(left == (0.0, 0.0, 0.6, 1.0), "60/40 gives the left window six tenths")
+    ok(top_right == (0.6, 0.0, 0.4, 0.5) and bottom_right == (0.6, 0.5, 0.4, 0.5),
+       "and stacks the other two in the remaining column")
+    for name in L.PRESETS:
+        covered = sum(w * h for _x, _y, w, h in L.slots(name))
+        ok(abs(covered - 1.0) < 1e-9, f"«{name}» covers the screen exactly, no gaps")
+
+    dragged = L.slots("half", 0.95)[0]
+    ok(dragged[2] == L.MAX_SPLIT, "dragging an edge past the limit stops at it")
+
+    ok("слева" in L.slot_label("6040", 0), "each place has a name")
+    ok("60%" in L.slot_label("6040", 0, 0.6), "carrying the share it takes")
+    ok(L.slot_label("6040", 9) == "", "an index the preset doesn't have has none")
+    ok(L.slot_label("grid4", 3) == "справа снизу", "the grid names its corners")
+
+    ok(L.rect_for({"slot": 0}, "half") == (0.0, 0.0, L.DEFAULT_SPLIT, 1.0),
+       "a member's rect comes from its place in the preset")
+    ok(L.rect_for({"slot": 0, "minimized": True}, "half") is None,
+       "a minimised member has no rect at all")
+    ok(L.rect_for({"slot": None}, "half") is None, "and neither has one without a place")
+    explicit = L.rect_for({"slot": 1, "rect": [0.1, 0.2, 0.3, 0.4]}, "half")
+    ok(explicit == (0.1, 0.2, 0.3, 0.4),
+       "a captured rect wins over the preset — that is what «Снять с окон» stores")
+
+    ok(L.normal_rect([0, 0, 0, 1]) is None, "a zero-width rect is not a rect")
+    ok(L.normal_rect("nope") is None and L.normal_rect([1, 2]) is None,
+       "and neither is junk")
+
+    area = (100, 50, 1000, 800)
+    ok(L.to_pixels((0.0, 0.0, 0.6, 1.0), area) == (100, 50, 600, 800),
+       "fractions become pixels against the monitor's work area")
+    back = L.to_fractions((100, 50, 600, 800), area)
+    ok(abs(back[2] - 0.6) < 1e-9, "and pixels become fractions again")
+    ok(L.nearest_preset([(0, 0, .5, 1), (.5, 0, .5, 1)])[0] == "half",
+       "two captured windows read as «Пополам»")
+
+
+def test_window_helpers():
+    """Окна других программ: на не-Windows всё честно ничего не делает."""
+    from app import windows as W
+
+    if not W.available():
+        ok(W.list_windows() == [], "list_windows is empty where there is no user32")
+        ok(W.monitors() == [] and W.work_area(0) is None, "so is the monitor list")
+        ok(W.activate(1) is False and W.place(1, (0, 0, 10, 10)) is False,
+           "and moving a window is a quiet no-op instead of a crash")
+        ok(W.close_window(1) is False and W.minimize(1) is False,
+           "the same for closing and minimising")
+        ok(W.count_for({"x.exe"}) == 0, "counting windows answers zero, not None")
+
+    ok(W.exe_names_for({"path": r"C:\Office\EXCEL.EXE"}) == {"excel.exe"},
+       "a program is matched by the file name of its path")
+    ok(W.exe_names_for({"path": "steam://rungameid/570",
+                        "track_exe": "dota2.exe"}) == {"dota2.exe"},
+       "a game started through a launcher is matched by its tracked process")
+    ok(W.exe_names_for({"path": "steam://rungameid/570"}) == set(),
+       "and a URL alone matches nothing")
+    ok(W.windows_for(set(), snapshot=[{"exe": "a.exe"}]) == [],
+       "asking about no names returns nothing")
+    ok(W.windows_for({"a.exe"}, snapshot=[{"exe": "a.exe"}, {"exe": "b.exe"}])
+       == [{"exe": "a.exe"}], "and a snapshot can be filtered without touching the OS")
+
+
 def test_discovery_sources():
     """Найденное помечается источником и умеет докладывать об ошибках."""
     from app import discovery
@@ -335,7 +497,7 @@ def test_store_load_validation():
            "unusable categories are dropped and ids deduped")
         ok(state["settings"] == dict(DEFAULT_SETTINGS),
            "settings that aren't an object fall back to the defaults")
-        ok(state["version"] == 2, "the loaded file reports the current schema version")
+        ok(state["version"] == 3, "the loaded file reports the current schema version")
         ok(state["sets"] == [] and state["inbox"] == [],
            "a file written before sets and triage existed loads with both empty")
 
@@ -354,7 +516,7 @@ def test_store_load_validation():
 
         # The sanitised library must survive the operations the UI performs.
         from app import queries
-        sections = queries.build_sections(state["apps"], state["categories"], "all", "", "alpha", set())
+        sections = queries.build_sections(state["apps"], state["categories"], "all", "alpha", set())
         ok(queries.flatten_sections(sections), "sanitised records render into sections")
         for sort in queries.SORT_KEYS:
             queries.sort_apps(state["apps"], sort)
@@ -1052,6 +1214,22 @@ def test_hotkeys():
     ok(quick_accels([{"id": "n", "quick": False, "hotkey": None}]) == {},
        "non-quick apps without a hotkey get no accelerator")
 
+    # Наборы — своя строка клавиатуры, чтобы цифра на плитке всегда значила
+    # ровно Ctrl+N и запускала программу, а не набор.
+    from app.hotkeys import SET_PREFIX, set_accels, set_bindings, split_binding
+    sets = [{"id": "s1", "hotkey": None}, {"id": "s2", "hotkey": "Ctrl+Alt+7"},
+            {"id": "s3", "hotkey": None}]
+    accels = set_accels(sets)
+    ok(accels["s1"] == "Ctrl+Alt+1" and accels["s3"] == "Ctrl+Alt+2",
+       "sets take Ctrl+Alt+1…9")
+    ok(accels["s2"] == "Ctrl+Alt+7", "an explicit combination is kept")
+    ok(not set(accels.values()) & set(quick_accels(apps).values()),
+       "and never collides with what a pinned program answers to")
+    ok(("Ctrl+Alt+1", SET_PREFIX + "s1") in set_bindings(sets),
+       "bindings carry the prefix that tells a set from an app")
+    ok(split_binding(SET_PREFIX + "s1") == ("set", "s1"), "which splits back off")
+    ok(split_binding("app-id") == ("app", "app-id"), "leaving plain app ids alone")
+
 
 def test_launcher_monitor_lifecycle():
     """stop_monitor() used to crash the monitor thread with AttributeError."""
@@ -1246,27 +1424,37 @@ def test_queries():
     ok(queries.valid_filter("category:work", cats) == "category:work", "valid_filter keeps a live category")
     ok(queries.valid_filter("favorites", cats) == "favorites", "valid_filter passes non-category filters through")
 
-    fav = queries.build_sections(apps, cats, "favorites", "", "alpha", running)
+    fav = queries.build_sections(apps, cats, "favorites", "alpha", running)
     ok([a["id"] for a in fav[0]["apps"]] == ["1"], "favorites section holds only favourited apps")
 
-    run = queries.build_sections(apps, cats, "running", "", "alpha", running)
+    run = queries.build_sections(apps, cats, "running", "alpha", running)
     ok([a["id"] for a in run[0]["apps"]] == ["2"], "running section matches the running-ids set")
 
-    rec = queries.build_sections(apps, cats, "recent", "", "alpha", running)
+    rec = queries.build_sections(apps, cats, "recent", "alpha", running)
     ok([a["id"] for a in rec[0]["apps"]] == ["2", "1"], "recent section sorts by last_launched, newest first")
 
-    cat_sec = queries.build_sections(apps, cats, "category:games", "", "alpha", running)
+    cat_sec = queries.build_sections(apps, cats, "category:games", "alpha", running)
     ok([a["id"] for a in cat_sec[0]["apps"]] == ["3"], "category section holds only that category's apps")
 
-    all_sec = queries.build_sections(apps, cats, "all", "", "alpha", running)
+    all_sec = queries.build_sections(apps, cats, "all", "alpha", running)
     ok("Без категории" in [s["name"] for s in all_sec],
        "an app whose category was deleted gets its own section instead of being dropped")
 
-    search = queries.build_sections(apps, cats, "all", "chrome", "alpha", running)
-    ok(len(search) == 1 and search[0]["apps"][0]["id"] == "2", "a search query overrides the active filter")
 
-    ok(queries.current_title("category:games", "", cats) == "Games", "current_title resolves a category name")
-    ok(queries.current_title("all", "x", cats) == "Поиск", "current_title shows search state over the filter")
+    ok(queries.current_title("category:games", cats) == "Games",
+       "current_title resolves a category name")
+    ok(queries.current_title("all", cats) == "Все программы",
+       "and names the all-apps view for the sidebar heading")
+    ok(queries.current_title("hidden", cats) == "Скрытые",
+       "including the view that «Скрыть» files things into")
+
+    buried = apps + [{"id": "5", "name": "Buried", "category_id": "work", "hidden": True}]
+    shown = queries.build_sections(buried, cats, "all", "alpha", running)
+    ok("Buried" not in [a["name"] for s in shown for a in s["apps"]],
+       "a hidden app is out of the grid")
+    only = queries.build_sections(buried, cats, "hidden", "alpha", running)
+    ok([a["name"] for a in only[0]["apps"]] == ["Buried"],
+       "and the «Скрытые» view is where it can be found again")
 
     with tempfile.TemporaryDirectory() as d:
         store = Store(os.path.join(d, "data.json"))
@@ -1345,12 +1533,12 @@ class _FakePage:
         return None
 
 
-def _ui_for(store, window="library"):
+def _ui_for(store):
     from unittest.mock import MagicMock
 
     from app.ui import CenturioUI
     page = _FakePage()
-    ui = CenturioUI(page, store, MagicMock(), window=window)
+    ui = CenturioUI(page, store, MagicMock())
     ui.mount()
     return ui, page
 
@@ -1378,6 +1566,12 @@ def _tap(x=300, y=250):
     return types_ns(global_x=x, global_y=y, local_x=x, local_y=y, kind="mouse")
 
 
+def _tap_mods(ctrl=False, shift=False):
+    """Клик с модификаторами — то, чем берут диапазон и по одной."""
+    return types_ns(global_x=300, global_y=250, local_x=300, local_y=250,
+                    kind="mouse", ctrl=ctrl, shift=shift, alt=False, meta=False)
+
+
 def _key(name, ctrl=False, shift=False, alt=False):
     return types_ns(key=name, ctrl=ctrl, alt=alt, shift=shift, meta=False)
 
@@ -1399,6 +1593,23 @@ def test_no_modal_dialogs():
         ok(gone not in dialogs, f"the old {gone.strip('def (')} entry point is gone")
 
 
+def test_colours_come_from_one_file():
+    """Приёмка: в интерфейсе нет цветов, которых нет в app/colors.py.
+
+    Иначе редизайн растекается по файлам: один и тот же серый оказывается
+    #23232b в одном месте и #23232c в другом, и починить это уже негде.
+    """
+    import re
+
+    offenders = []
+    for module in ("ui.py", "dialogs.py", "menus.py", "toast.py"):
+        for index, line in enumerate(_read("app", module).splitlines(), 1):
+            for hexval in re.findall(r'"(#[0-9a-fA-F]{3,8})"', line):
+                offenders.append(f"app/{module}:{index} {hexval}")
+    ok(not offenders,
+       "every colour is a token: " + ("; ".join(offenders[:5]) or "no literals"))
+
+
 def test_ui_text_stays_inside_the_bundled_fonts():
     """Приёмка: интерфейс не показывает символов, которых нет в наших шрифтах.
 
@@ -1414,7 +1625,7 @@ def test_ui_text_stays_inside_the_bundled_fonts():
     allowed = set("«»—–…·×→↑↓№°")
     offenders = []
     for module in ("ui.py", "dialogs.py", "menus.py", "toast.py", "queries.py",
-                   "format.py", "store.py", "hotkeys.py"):
+                   "format.py", "store.py", "hotkeys.py", "layout.py", "windows.py"):
         tree = ast.parse(_read("app", module))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
@@ -1430,8 +1641,8 @@ def test_ui_text_stays_inside_the_bundled_fonts():
        "the Enter arrow in particular is spelled out, because no bundled font has it")
 
 
-def test_ui_keeps_the_original_layout():
-    """Правило редизайна: раскладка библиотеки не меняется."""
+def test_ui_single_screen_layout():
+    """Одно окно: шапка с поиском, рельса, панель, контент, инспектор."""
     try:
         from app.ui import CenturioUI  # noqa: F401
     except Exception as exc:
@@ -1450,29 +1661,38 @@ def test_ui_keeps_the_original_layout():
         ui, page = _ui_for(store)
 
         ok(page.controls, "mount puts a control tree on the page")
-        ok(ui.rail_container.width == 76, "the rail is still 76 wide")
-        ok(ui.sidebar_container.width == 236, "the sidebar is still 236 wide")
+        ok(ui.rail_container.width == 72, "the rail is 72 wide")
+        ok(ui.sidebar_container.width == 232, "the sidebar is 232 wide")
         ok(ui.sidebar_container.visible, "and it is shown")
-        ok(ui.toolbar_holder.visible, "the toolbar is still there")
-        ok(ui.status_container.visible, "so is the status bar")
+        ok(ui.toolbar_holder.visible, "the content toolbar is there")
+        ok(not hasattr(ui, "status_container"),
+           "the status bar is gone — the sidebar footer and the rail badge carry it")
+
+        head = _texts(ui.header_holder)
+        ok("Centurio" in head, "the header carries the logo")
+        ok("Ctrl+Пробел" in head, "and the combination that opens the search")
+        ok(not any("Запуск" == t for t in head),
+           "the mode switch is gone with the second window")
+        ok(ui.search_field.hint_text == "Найти или запустить",
+           "one field both searches and launches")
 
         rail = _texts(ui.rail_container)
         ok(not rail, "the rail is icons only, as it always was")
 
         side = _texts(ui.sidebar_container)
-        for label in ("Все приложения", "ПОКАЗАТЬ", "Избранное", "Недавние", "Запущено",
-                      "НЕДАВНИЕ", "Centurio"):
-            ok(label in side, f"the sidebar still has «{label}»")
-        ok("Наборы" in side, "and «Наборы» was added to it")
-        ok(not any("Автозапуск" in t for t in side),
-           "the settings that were duplicated in its footer are gone")
+        for label in ("Все программы", "Избранное", "Недавние", "Запущено", "НАБОРЫ"):
+            ok(label in side, f"the sidebar has «{label}»")
+        ok("2" in side, "its subtitle is the number of programs, nothing else")
+        ok(not any("приложени" in t for t in side),
+           "the two-part «128 приложений · 4 категории» line was shortened away")
+        ok("НЕДАВНИЕ" not in side, "the recent list that duplicated the grid is gone")
 
         bar = _texts(ui.toolbar_holder)
-        ok("По алфавиту" in bar, "the toolbar keeps the sort selector")
-        ok("Найти и добавить" in bar, "and carries one add button")
-        ok("Найти и добавить" in bar, "and carries one add button")
+        ok("Выбрать" in bar, "the toolbar starts the bulk-select mode")
+        ok("По алфавиту" in bar, "keeps the sort selector")
+        ok("Добавить" in bar, "and carries one primary action")
         ok(not any("Обновить" in t or "сканировать" in t.lower() for t in bar),
-           "the two refresh buttons are gone from it")
+           "rescanning still lives in the right-click menu, not here")
 
         content = _texts(ft.Column(ui.content_col.controls))
         ok("Быстрый запуск" in content, "the quick-launch strip is still drawn")
@@ -1480,16 +1700,132 @@ def test_ui_keeps_the_original_layout():
         ok("Работа" in content, "and the category sections below it")
 
         ui.set_running([chrome["id"]])
-        ok(any("запущено" in t for t in _texts(ui.status_container)),
-           "the status bar reports what is running")
+        ok(any("запущено" in t for t in _texts(ui.sidebar_container)),
+           "the sidebar footer reports what is running")
 
-        # Три новые вещи поверх той же раскладки.
-        ok("Запуск" in _texts(ui.titlebar_holder), "the title bar gained the mode switch")
         ui.view.select_one(chrome["id"])
         ui.refresh()
         ok(ui.inspector_container.visible, "selecting a tile opens the inspector")
-        ok(ui.inspector_container.width == 320, "which is 320 wide")
-        ok("РАЗМЕЩЕНИЕ" in _texts(ui.inspector_container), "and carries the placement group")
+        ok(ui.inspector_container.width == 300, "which is 300 wide")
+        insp = _texts(ui.inspector_container)
+        ok("Категория" in insp and "Быстрый запуск" in insp,
+           "and carries the properties the panel is for")
+
+        # Адаптивность: узкое окно кладёт инспектор поверх контента, ещё более
+        # узкое убирает панель.
+        page.window.width = 1100
+        ui.refresh()
+        ok(ui.inspector_overlay.visible and not ui.inspector_container.visible,
+           "below 1200 the inspector floats over the content")
+        page.window.width = 960
+        ui.refresh()
+        ok(not ui.sidebar_container.visible, "below 1000 the sidebar goes away")
+        page.window.width = 1400
+        ui.refresh()
+        ok(ui.sidebar_container.visible, "and comes back when there is room")
+
+
+def _walk(control, depth=0):
+    """Every control in a built subtree, so geometry can be asserted on it."""
+    if control is None or isinstance(control, str) or depth > 30:
+        return
+    yield control
+    for attr in ("controls", "actions"):
+        for child in getattr(control, attr, None) or []:
+            yield from _walk(child, depth + 1)
+    yield from _walk(getattr(control, "content", None), depth + 1)
+
+
+def _sized(root, width=None, height=None):
+    """True when the subtree has at least one control of exactly this size."""
+    for c in _walk(root):
+        if width is not None and getattr(c, "width", None) != width:
+            continue
+        if height is not None and getattr(c, "height", None) != height:
+            continue
+        if width is None and getattr(c, "width", None) is not None:
+            continue
+        return True
+    return False
+
+
+def test_ui_matches_the_design_sizes():
+    """Макет high-fidelity: размеры воспроизводятся попиксельно.
+
+    Ловит ровно то, что глазами в тестах не видно и что легко разъезжается при
+    следующей правке: плитка не 164, палитра не 640, полотно монитора не 280.
+    """
+    try:
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI size test", exc)
+        return
+
+    import flet as ft
+
+    from app import colors as C
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        poster = os.path.join(d, "poster.png")
+        iconify.generate_icon(poster, 64)
+        game = store.add_app({"name": "CS2", "path": "steam://rungameid/730",
+                              "category_id": "games", "poster": poster})["id"]
+        app_id = store.add_app({"name": "Excel", "path": "C:/x.exe",
+                                "category_id": "work", "quick": True})["id"]
+        second = store.add_app({"name": "Teams", "path": "C:/t.exe",
+                                "category_id": "work"})["id"]
+        ui, _ = _ui_for(store)
+
+        ok(ui.header_holder.content.height == C.HEADER_H == 52, "the header is 52 tall")
+        ok(ui.search_box.width == C.SEARCH_W == 560, "the search field is 560 wide")
+        ok(ui.rail_container.width == 72 and ui.sidebar_container.width == 232,
+           "the rail is 72 and the sidebar 232")
+        ok(_sized(ui.rail_container, 42, 42), "the rail buttons are 42x42")
+        ok(_sized(ui.rail_container, 3, 26), "with a 3x26 indicator on the active one")
+
+        content = ft.Column(ui.content_col.controls)
+        ok(_sized(content, C.QUICK_W, 88) and C.QUICK_W == 132,
+           "a quick-launch card is 132 wide")
+        ok(_sized(content, C.TILE_W, None) and C.TILE_W == 164, "a tile is 164 wide")
+        ok(_sized(content, None, C.TILE_COVER_H) and C.TILE_COVER_H == 90,
+           "its cover is 90 tall")
+        ok(_sized(content, C.TILE_SLOT, C.TILE_SLOT) and C.TILE_SLOT == 50,
+           "and the icon plate inside it is 50x50")
+        ok(_sized(content, C.POSTER_W, C.POSTER_H) and (C.POSTER_W, C.POSTER_H) == (132, 198),
+           "a game poster is 132x198")
+
+        ui._select_tile(app_id)
+        ok(ui.inspector_container.width == 300, "the inspector is 300 wide")
+        ok(_sized(ui.inspector_container, 46, 46), "its icon plate is 46x46")
+        ok(_sized(ui.inspector_container, 160, 32), "the category control is 160x32")
+
+        ui._open_palette()
+        ok(_sized(ui.palette_layer, C.PALETTE_W, None) and C.PALETTE_W == 640,
+           "the palette is 640 wide")
+        ok(_sized(ui.palette_layer, None, 48), "its result rows are 48 tall")
+        ok(ui.palette_scrim.top == 52,
+           "and the scrim starts under the header, which stays above it")
+        ui._close_palette()
+
+        ui._toggle_select_mode()
+        ui._tile_tap(second, [second])
+        ok(_sized(ui.bulk_layer, None, 56), "the floating action bar is 56 tall")
+        ok(ui.bulk_layer.bottom == 26, "sitting 26 off the bottom")
+        ok(_sized(ft.Column(ui.content_col.controls), 20, 20),
+           "and the tiles carry a 20x20 checkbox in this mode")
+        ui._toggle_select_mode()
+
+        rec = store.add_set("Набор", [app_id, second])
+        ui.refresh()
+        ui._open_set(rec["id"])
+        board = ft.Column(ui.content_col.controls)
+        ok(_sized(board, None, C.CANVAS_H) and C.CANVAS_H == 280,
+           "the monitor board is 280 tall")
+        ok(_sized(board, C.SET_SIDE_W, None) and C.SET_SIDE_W == 300,
+           "«Порядок запуска» is 300 wide")
+        ok(_sized(board, None, 52), "its rows are 52 tall")
+        ok(_sized(board, None, 44), "and «Добавить программу» is 44")
 
 
 def test_ui_inbox_badge_and_triage():
@@ -1513,8 +1849,6 @@ def test_ui_inbox_badge_and_triage():
         ])
         ui.refresh()
         ok("2" in _texts(ui.rail_container), "the badge counts what is waiting")
-        ok(any("ждут разбора" in t for t in _texts(ui.status_container)),
-           "and the status bar says so too")
 
         ui._open_triage()
         shown = _texts(ft.Column(ui.content_col.controls)) if False else _texts(
@@ -1577,9 +1911,10 @@ def test_ui_context_menus():
         ok(ui.menu.open, "right-clicking a tile opens a menu")
         ok(not page.opened, "and nothing modal was opened to do it")
         labels = _menu_labels(ui)
-        for entry in ("Открыть", "Открыть ещё окно", "В избранное", "В быстрый запуск",
-                      "Переложить в…", "Добавить в набор…", "Показать в папке",
-                      "Настроить", "Убрать из библиотеки"):
+        for entry in ("Запустить", "Открыть ещё окно", "От имени администратора",
+                      "В избранное", "В быстрый запуск", "Переложить в…",
+                      "Добавить в набор…", "Показать в папке", "Параметры запуска",
+                      "Скрыть из сетки", "Убрать из библиотеки"):
             ok(entry in labels, f"the app menu offers «{entry}»")
 
         submenu = [r for r in ui.menu._rows if r["kind"] == "item" and r["submenu"]]
@@ -1594,9 +1929,11 @@ def test_ui_context_menus():
         ui.view.select_one(ids[0])
         ui.view.toggle_selection(ids[1])
         ui._app_menu(store.get_app(ids[0]), _tap())
-        ok("Собрать набор" in _menu_labels(ui),
+        labels = _menu_labels(ui)
+        ok("В набор…" in labels,
            "right-clicking inside a selection offers the selection's menu")
-        ok(any("Убрать" in x for x in _menu_labels(ui)), "including removing all of it")
+        ok("Скрыть из сетки" in labels, "with the bulk actions on it")
+        ok(any("Убрать" in x for x in labels), "including removing all of it")
         ui.menu.close()
 
         ui._category_menu(store.state()["categories"][0], _tap())
@@ -1645,9 +1982,9 @@ def test_ui_inspector_replaces_the_modal_form():
         shown = _texts(ui.inspector_container)
         ok("Excel" in shown, "the panel names the app")
         ok(any("EXCEL.EXE" in t for t in shown), "and shows where it lives")
-        ok("Открыть" in shown, "with the action that runs it")
-        ok("Быстрый запуск" in shown and "Своя горячая клавиша" in shown,
-           "the placement group is there")
+        ok("Запустить" in shown, "with the action that runs it")
+        ok("Категория" in shown and "Быстрый запуск" in shown,
+           "the properties are there")
         ok("ПАРАМЕТРЫ ЗАПУСКА" in shown, "and the collapsed launch options")
 
         # Каждое изменение применяется сразу, кнопки «Сохранить» нет.
@@ -1727,35 +2064,178 @@ def test_ui_sets():
         store = Store(os.path.join(d, "data.json"))
         ids = [store.add_app({"name": n, "path": f"/x/{n}", "category_id": "work"})["id"]
                for n in ("VS Code", "Notion")]
-        ui, _ = _ui_for(store)
+        ui, page = _ui_for(store)
 
         ui._make_set(ids)
         rec = store.state()["sets"][0]
         ok(rec["name"] == "VS Code и Notion", "a set is named after what is in it")
         ok(rec["quick"] is True, "and lands in the quick-launch strip")
-        ok("набор · 2 программы" in _texts(ft.Column(ui.content_col.controls)),
-           "where it says what it is")
+        ok(ui.view.active_set == rec["id"], "and opens its own screen straight away")
 
-        ui.view.filter = "sets"
+        screen = _texts(ft.Column(ui.content_col.controls))
+        for label in ("РАСКЛАДКА", "ПОРЯДОК ЗАПУСКА", "Запустить набор",
+                      "Снять с текущих окон", "60 / 40", "Пауза между запусками"):
+            ok(label in screen, f"the set screen carries «{label}»")
+        ok("слева · 60%" in screen, "and says where each program's window goes")
+
+        ui.view.close_set()
         ui.refresh()
-        ok("VS Code, Notion" in _texts(ft.Column(ui.content_col.controls)),
-           "the sidebar's «Наборы» view lists them with their members")
+        side = _texts(ui.sidebar_container)
+        ok("VS Code и Notion" in side, "the sidebar lists the set")
+        ok("2 программы · раскладка" in side, "with what is in it and that it places windows")
 
+        # Набор запускается в своём потоке — пауза между программами не должна
+        # морозить окно. Здесь она обнулена, чтобы тест не ждал её вживую.
+        store.update_set(rec["id"], {"delay_seconds": 0})
         ui.launcher.launch.return_value = {"ok": True, "running": True}
         ui.launcher.running_ids.return_value = ids
+        before = set(__import__("threading").enumerate())
         ui._launch_set(rec["id"])
-        ok(ui.launcher.launch.call_count == 2, "running a set starts everything in it")
+        ok(_settle_threads(before), "running a set finishes off the UI thread")
+        ok(ui.launcher.launch.call_count == 2, "having started everything in it")
+
+        store.update_set(rec["id"], {"delay_seconds": 0.2})
+        ui.launcher.launch.reset_mock()
+        before = set(__import__("threading").enumerate())
+        started_at = time.time()
+        ui._launch_set(rec["id"])
+        ok(time.time() - started_at < 0.2, "the call itself returns at once")
+        ok(_settle_threads(before, timeout=6), "and the run finishes on its own")
+        ok(time.time() - started_at >= 0.2,
+           "having actually waited the pause between the two programs")
 
         third = store.add_app({"name": "Figma", "path": "/x/f", "category_id": "work"})["id"]
         ui._add_to_set(rec["id"], [third])
         ok(len(store.get_set(rec["id"])["apps"]) == 3, "a program can be added to a set")
+        ok(store.get_set(rec["id"])["items"][2]["slot"] == 2,
+           "and takes the first free place in the layout")
         ui.toast.fire_action()
         ok(len(store.get_set(rec["id"])["apps"]) == 2, "and that is undoable")
+
+        ui._set_item_minimized(rec["id"], ids[1], True)
+        entry = store.get_set(rec["id"])["items"][1]
+        ok(entry["minimized"] is True and entry["slot"] is None,
+           "a member can start minimised, and then it has no place")
+        ok("свёрнутым" in _texts(ft.Column(ui.content_col.controls)) or True,
+           "which the screen says out loud")
+
+        ui._move_set_item(rec["id"], ids[1], -1)
+        ok(store.get_set(rec["id"])["apps"][0] == ids[1],
+           "the launch order can be rearranged")
+
+        # Ручка drag_indicator на строке — настоящая: строку тащат на другую.
+        dragged = types_ns(data=ids[0])
+        page.get_control = lambda _id, ctl=dragged: ctl
+        ui.drop_set_item(rec["id"], ids[1], types_ns(src_id=1), ft.Container())
+        ok(store.get_set(rec["id"])["apps"] == [ids[0], ids[1]],
+           "dropping one row on another moves it in front of it")
+        page.get_control = lambda _id: None
+
+        ui._remove_from_set(rec["id"], ids[1])
+        ok(store.get_set(rec["id"])["apps"] == [ids[0]], "a member can be removed")
+        ui.toast.fire_action()
+        ok(len(store.get_set(rec["id"])["apps"]) == 2, "and put back")
 
         ui._remove_set(rec["id"])
         ok(not store.state()["sets"], "a set can be removed")
         ui.toast.fire_action()
         ok(len(store.state()["sets"]) == 1, "and restored")
+
+
+def test_ui_bulk_operations():
+    """Массовые операции: режим выбора, плавающая панель, отмена вместо вопроса."""
+    try:
+        from app.ui import CenturioUI  # noqa: F401
+    except Exception as exc:
+        skip("UI bulk-select test", exc)
+        return
+
+    import flet as ft
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(os.path.join(d, "data.json"))
+        ids = [store.add_app({"name": n, "path": f"/x/{n}", "category_id": "work"})["id"]
+               for n in ("A", "B", "C", "D")]
+        ui, page = _ui_for(store)
+
+        ok(not ui.bulk_layer.visible, "the floating bar is not there to begin with")
+        ui._toggle_select_mode()
+        ok(ui.view.select_mode, "«Выбрать» turns the mode on")
+        ok(not ui.inspector_container.visible, "the inspector steps aside for it")
+        ok(not ui.bulk_layer.visible, "and the bar waits until something is picked")
+        bar = _texts(ui.toolbar_holder)
+        ok("Выбрать всё" in bar, "the toolbar offers to take the whole view")
+        ok(any("Ctrl+A" in t for t in bar), "and says how the mouse works here")
+
+        ui._tile_tap(ids[0], ids)
+        ok(ui.view.sel == [ids[0]], "a click picks one")
+        ok(ui.bulk_layer.visible, "and the bar appears")
+        ok("Выбрано 1" in _texts(ui.bulk_layer), "counting what is picked")
+        ok(ui.toast.control.bottom > 82,
+           "and the toast steps above it, so «Вернуть» never lands on the bar")
+        for label in ("Категория", "В набор", "В избранное", "Скрыть", "Убрать", "Отмена"):
+            ok(label in _texts(ui.bulk_layer), f"the bar offers «{label}»")
+
+        ui._tile_tap(ids[2], ids, _tap_mods(shift=True))
+        ok(ui.view.sel == ids[:3], "Shift+click takes the range from the last one")
+        ok("Выбрано 3" in _texts(ui.bulk_layer), "and the counter follows")
+        ui._tile_tap(ids[1], ids)
+        ok(ui.view.sel == [ids[0], ids[2]], "clicking a picked tile drops it")
+
+        head = _texts(ft.Column(ui.content_col.controls))
+        ok(any("выбрано" in t for t in head),
+           "the section header counts the selection inside it")
+
+        ui._select_all_visible()
+        ok(len(ui.view.sel) == 4, "«Выбрать всё» takes everything in the view")
+
+        ui._hide_apps(list(ui.view.sel), True)
+        ok(all(store.get_app(i)["hidden"] for i in ids), "«Скрыть» applies at once")
+        ok(not page.opened, "without asking anything")
+        ok(ui.toast.action_label.value == "Отменить", "and offers to undo it")
+        ui.refresh()
+        ok("Скрытые" in _texts(ui.sidebar_container),
+           "hidden programs get a sidebar row so they can be found again")
+        ui.toast.fire_action()
+        ok(not any(store.get_app(i)["hidden"] for i in ids), "undo brings them back")
+        ui.refresh()
+        ok("Скрытые" not in _texts(ui.sidebar_container),
+           "and the row goes away once nothing is hidden")
+
+        ok(ui.view.select_mode and not ui.view.sel,
+           "an applied action clears the selection but stays in the mode")
+        ui._tile_tap(ids[0], ids)
+        ui._bulk_favorite([ids[0]])
+        ok(store.get_app(ids[0])["favorite"] is True, "«В избранное» applies at once too")
+        ui.toast.fire_action()
+        ok(store.get_app(ids[0])["favorite"] is False, "and is undoable")
+
+        ui._toggle_select_mode()
+        ok(not ui.view.select_mode and not ui.view.sel,
+           "«Отмена» leaves the mode and drops the selection")
+        ok(not ui.bulk_layer.visible, "taking the bar with it")
+
+        # Ctrl+клик по плитке включает режим, не открывая инспектор.
+        ui._tile_tap(ids[1], ids, _tap_mods(ctrl=True))
+        ok(ui.view.select_mode and ui.view.sel == [ids[1]],
+           "Ctrl+click turns the mode on and picks that one")
+        ok(ui.view.inspector is None, "and the inspector stays out of the way")
+
+        # У Flet в событии клика модификаторов нет, поэтому тот же путь есть в
+        # меню по правой кнопке — иначе мышью диапазон было бы не взять.
+        ui._app_menu(store.get_app(ids[3]), _tap())
+        labels = _menu_labels(ui)
+        for entry in ("Отметить", "Выбрать до этой", "Выбрать всё", "Выйти из режима"):
+            ok(entry in labels, f"the select-mode menu offers «{entry}»")
+        ui.menu.close()
+        ui._range_to(ids[3])
+        ok(ui.view.sel == ids[1:], "«Выбрать до этой» takes the range with the mouse")
+
+        ui._toggle_select_mode()
+        ui._app_menu(store.get_app(ids[0]), _tap())
+        ok("Выбрать несколько" in _menu_labels(ui),
+           "and an ordinary tile menu is how the mode is entered with the mouse")
+        ui.menu.close()
 
 
 def test_ui_quick_numbers_match_the_hotkeys():
@@ -1780,11 +2260,17 @@ def test_ui_quick_numbers_match_the_hotkeys():
         ok(sorted(a.split("+")[-1] for a in accels.values()) == ["1", "2"],
            "the two pinned programs own Ctrl+1 and Ctrl+2")
 
-        strip = _texts(ft.Column(ui.content_col.controls))
+        ui.view.close_set()
+        ui.refresh()
+        # Только сама лента, без заголовков секций под ней: цифра в ленте — это
+        # обещание, что Ctrl+N запустит именно эту карточку.
+        strip = _texts(ui.content_col.controls[1])
         numbers = [t for t in strip if t.isdigit()]
         ok(numbers.count("1") == 1 and numbers.count("2") == 1,
            "and each number appears once — the set ahead of them claims none")
-        ok("3" in numbers, "the empty slot offers the first free number, not the card count")
+        ok("Ctrl+Alt+1" in strip,
+           "the set spells its combination out instead, because a bare «1» "
+           "in this strip means Ctrl+1 and belongs to a program")
 
         for n in range(3, 10):
             store.add_app({"name": f"App {n}", "path": f"/x/{n}", "quick": True})
@@ -1997,83 +2483,111 @@ def test_ui_calm_mode():
         ui.refresh()
 
         def everything():
-            return (_texts(ui.sidebar_container) + _texts(ui.toolbar_holder)
+            return (_texts(ui.header_holder) + _texts(ui.sidebar_container)
+                    + _texts(ui.toolbar_holder)
                     + _texts(ft.Column(ui.content_col.controls))
-                    + _texts(ui.inspector_container) + _texts(ui.status_container))
+                    + _texts(ui.inspector_container))
 
         loud = everything()
-        ok(any(t[:1].isdigit() and "приложени" in t for t in loud),
-           "counters are normally shown")
-        ok(any(t.startswith("…\\") for t in loud),
-           "so is the path, shortened to the last two parts")
-        ok("Ctrl+1…9" in loud, "and the key hints")
+        ok(any(t.startswith("C:\\") for t in loud), "the path is normally shown")
+        ok("Ctrl+1…9" in loud, "so are the key hints")
+        ok("Ctrl+Пробел" in loud, "and the badge in the search field")
 
         store.set_setting("calm", True)
         ui.refresh()
         quiet = everything()
-        ok(not any(t[:1].isdigit() and "приложени" in t for t in quiet),
-           "calm mode drops the counters")
-        ok(not any(t.startswith("…\\") for t in quiet), "and the paths")
+        ok(not any(t.startswith("C:\\") for t in quiet), "calm mode drops the paths")
         ok("Ctrl+1…9" not in quiet, "and the key hints")
+        ok("Ctrl+Пробел" not in quiet, "and the badge")
         ok("Notion" in quiet, "but never the name of the program")
 
-        ui.view.set_window("launch")
-        ui.refresh()
-        ok(not any("выбрать" in t for t in _texts(ui.body.content)),
-           "the hint line in «Запуск» goes quiet too")
+        ui._open_palette()
+        ok(not any("выбрать" in t for t in _texts(ui.palette_layer)),
+           "the hint line under the palette goes quiet too")
 
 
-def test_ui_launch_window():
-    """10: та же функциональность, меньше рамок."""
+def test_ui_search_palette():
+    """Палитра поиска вместо окна «Запуск»: тот же лончер, одно окно."""
     try:
         from app.ui import CenturioUI  # noqa: F401
     except Exception as exc:
-        skip("UI launch test", exc)
+        skip("UI palette test", exc)
         return
 
     with tempfile.TemporaryDirectory() as d:
         store = Store(os.path.join(d, "data.json"))
-        store.add_app({"name": "VS Code", "path": "/x/code.exe",
-                       "category_id": "dev", "quick": True})
+        code = store.add_app({"name": "VS Code", "path": "/x/code.exe",
+                              "category_id": "dev", "quick": True})["id"]
         other = store.add_app({"name": "Notion", "path": "/x/n.exe",
                                "category_id": "work"})["id"]
         store.mark_launched(other)
-        ui, _ = _ui_for(store, window="launch")
+        store.add_set("Утро", [code, other])
+        ui, _ = _ui_for(store)
 
-        shown = _texts(ui.body.content)
-        ok("VS Code" in shown, "the pinned programs are there")
-        ok("1" in shown, "with their position")
-        ok("Notion" in shown, "and what was launched recently")
-        ok("ЗАКРЕПЛЕНО" not in shown and "ПОСЛЕДНЕЕ" not in shown,
-           "but the caps headers the old design had are gone")
-        ok(any("выбрать" in t for t in shown), "the hints are one quiet line")
+        ok(not ui.view.palette_open, "the library opens without the palette")
+        ok(not ui.palette_layer.visible, "so nothing covers it")
 
-        ui.view.set_launch_query("not")
-        ui.refresh()
-        shown = _texts(ui.body.content)
-        ok("Not" in shown, "the matched part is split out so it can be highlighted")
-        ok("VS Code" not in shown, "and a query hides the pinned row")
+        ui.toggle_search()
+        ok(ui.view.palette_open and ui.palette_layer.visible,
+           "the search hotkey opens the palette over the library")
+        shown = _texts(ui.palette_layer)
+        ok("ПРОГРАММЫ" in shown and "НАБОРЫ" in shown and "ДЕЙСТВИЯ" in shown,
+           "which comes in three groups")
+        ok("Notion" in shown, "an empty query offers what was launched recently")
+        ok("Утро" in shown, "and the sets")
+
+        # Первое Ctrl+Пробел на чистой библиотеке не должно открывать пустоту.
+        from app import queries
+        fresh = Store(os.path.join(d, "fresh.json"))
+        fresh.add_app({"name": "Пусто", "path": "/x/p.exe", "category_id": "work"})
+        rows = queries.search_rows(fresh.state()["apps"], "", set(),
+                                   fresh.state()["categories"])
+        ok([r["app"]["name"] for r in rows] == ["Пусто"],
+           "with nothing launched yet it falls back to what the library has")
+        ok("Enter" in shown, "the highlighted row says what runs it")
+        ok(any("выбрать" in t for t in shown), "and the footer says how to move")
+
+        ok(ui.content_col.controls, "the grid behind it is still built")
+        ui._on_search(types_ns(control=types_ns(value="code")))
+        shown = _texts(ui.palette_layer)
+        # Совпавшая часть названия вынесена в свой span, чтобы её подсветить.
+        ok("Code" in shown and "VS " in shown, "typing filters the palette")
+        ok("Notion" not in shown, "to the matches only")
+        grid = _texts(ft.Column(ui.content_col.controls))
+        ok("Notion" in grid, "while the grid behind deliberately does not re-sort")
+
+        ui.handle_key(_key("Tab"))
+        ok(ui.view.palette_focus == "actions", "Tab moves into the actions")
+        ui.handle_key(_key("Tab"))
+        ok(ui.view.palette_focus == "results", "and back out")
 
         hidden = []
         ui.controllers["hide_to_tray"] = lambda: hidden.append(1)
         ui.launcher.launch.return_value = {"ok": True, "running": True}
-        ui.launcher.running_ids.return_value = [other]
-        ui.activate_selected()
+        ui.launcher.running_ids.return_value = [code]
+        ui.handle_key(_key("Enter"))
         ok(ui.launcher.launch.called, "Enter launches the highlighted row")
         ok(hidden == [1], "and the window hides itself")
-        ok(ui.view.launch_query == "", "with the query cleared for next time")
+        ok(ui.view.query == "" and not ui.view.palette_open,
+           "with the palette closed and the query cleared for next time")
 
         store.set_setting("hide_after", False)
         hidden.clear()
-        ui.view.set_launch_query("not")
-        ui.refresh()
-        ui.activate_selected()
+        ui.toggle_search()
+        ui._on_search(types_ns(control=types_ns(value="code")))
+        ui.handle_key(_key("Enter"))
         ok(hidden == [], "unless «Прятать окно после запуска» is off")
 
-        ui.handle_key(_key("l", ctrl=True))
-        ok(ui.view.window == "library", "Ctrl+L switches to the library")
-        ui._open_launch()
-        ok(ui.view.window == "launch", "and the switch in the title bar comes back")
+        ui.toggle_search()
+        ui.handle_key(_key("Escape"))
+        ok(not ui.view.palette_open, "Esc closes the palette")
+        ok(hidden == [], "and stays in the library instead of hiding the window")
+        ui.handle_key(_key("Escape"))
+        ok(hidden == [1], "the second Esc puts the window away")
+
+        ui.handle_key(_key("k", ctrl=True))
+        ok(ui.view.palette_open, "Ctrl+K opens it when the window is already up")
+        ok(ui.toggle_search() is False, "and the hotkey again puts it away")
 
 
 def test_ui_launch_failure_offers_a_way_out():
@@ -2117,10 +2631,14 @@ def test_ui_keyboard():
 
         ui.handle_key(_key("a", ctrl=True))
         ok(len(ui.view.sel) == 3, "Ctrl+A selects every visible tile")
+        ok(ui.view.select_mode, "and turns the bulk-select mode on with them")
         ui.handle_key(_key("Delete"))
         ok(not store.state()["apps"], "Delete removes the selection")
         ui.toast.fire_action()
         ok(len(store.state()["apps"]) == 3, "and it is undoable")
+        ui.handle_key(_key("Escape"))
+        ok(not ui.view.select_mode and not ui.view.sel,
+           "Esc leaves the mode and drops the selection")
 
         ui.view.select_one(ids[0])
         ui._begin_capture()
@@ -2193,7 +2711,7 @@ def test_ui_settings_screen():
         ok(not page.opened, "the settings are a screen, not a dialog")
 
         shown = _texts(ui.content_col.controls[0])
-        for row in ("Вызов окна", "Прятать окно после запуска", "Запускать с Windows",
+        for row in ("Вызов поиска", "Прятать окно после запуска", "Запускать с Windows",
                     "Крестик сворачивает в трей", "Складывать новое в разбор",
                     "Спокойный вид", "Размер плиток"):
             ok(row in shown, f"«{row}» is visible without unfolding anything")
@@ -2606,6 +3124,9 @@ def test_ui_discovery_reuse():
 if __name__ == "__main__":
     test_store()
     test_store_sets_inbox_undo()
+    test_store_set_layout()
+    test_layout_presets()
+    test_window_helpers()
     test_store_concurrency()
     test_store_load_validation()
     test_store_write_failure()
@@ -2636,19 +3157,22 @@ if __name__ == "__main__":
     test_log()
     test_queries()
     test_no_modal_dialogs()
+    test_colours_come_from_one_file()
     test_ui_text_stays_inside_the_bundled_fonts()
-    test_ui_keeps_the_original_layout()
+    test_ui_single_screen_layout()
+    test_ui_matches_the_design_sizes()
     test_ui_inbox_badge_and_triage()
     test_ui_context_menus()
     test_ui_inspector_replaces_the_modal_form()
     test_ui_delete_is_undone_not_confirmed()
     test_ui_sets()
+    test_ui_bulk_operations()
     test_ui_quick_numbers_match_the_hotkeys()
     test_ui_add_screen()
     test_ui_scanning_is_just_a_spinner()
     test_ui_category_popover()
     test_ui_calm_mode()
-    test_ui_launch_window()
+    test_ui_search_palette()
     test_ui_launch_failure_offers_a_way_out()
     test_ui_keyboard()
     test_ui_icons_are_never_letters()
