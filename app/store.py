@@ -12,13 +12,14 @@ from pathlib import Path
 from . import layout as L
 from . import log
 
-# Цвета — из макета редизайна. Раньше все четыре были "#ffffff" и различались
-# только тем, что colors.palette_color() выбирал по хешу имени.
+# Белый — цвет темы, а не заглушка: рельса монохромная, категории различаются
+# иконкой и названием, а не цветом. Свой цвет категория получает только если
+# его явно выбрали в поповере.
 DEFAULT_CATEGORIES = [
-    {"id": "work", "name": "Работа", "icon": "work", "color": "#4f7dff", "order": 0},
-    {"id": "create", "name": "Творчество", "icon": "brush", "color": "#b98cff", "order": 1},
-    {"id": "games", "name": "Игры", "icon": "sports_esports", "color": "#3ecfaf", "order": 2},
-    {"id": "dev", "name": "Разработка", "icon": "code", "color": "#ff9f6e", "order": 3},
+    {"id": "work", "name": "Работа", "icon": "work", "color": "#ffffff", "order": 0},
+    {"id": "create", "name": "Творчество", "icon": "brush", "color": "#ffffff", "order": 1},
+    {"id": "games", "name": "Игры", "icon": "sports_esports", "color": "#ffffff", "order": 2},
+    {"id": "dev", "name": "Разработка", "icon": "code", "color": "#ffffff", "order": 3},
 ]
 
 # The combination that raises the window and opens the search palette. Stored so

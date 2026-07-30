@@ -685,16 +685,18 @@ class CenturioUI:
     def _build_rail(self):
         on_grid = self.view.screen == "grid" and not self.view.active_set
         all_active = self._is_all_view() and on_grid
-        fav_active = self.filter == "favorites" and on_grid
         waiting = len(self.inbox())
+        # Кнопка панели переехала сюда со звезды: «Избранное» уже есть строкой в
+        # самой панели, а показывать/скрывать её — такое же переключение вида,
+        # как «Все программы», и место рядом с ним для этого естественное.
         items = [
             self._rail_item(ft.Icon(ft.Icons.GRID_VIEW, size=19,
                                     color=C.TEXT if all_active else C.MUTED),
                             all_active, lambda: self._set_filter("all"), "Все программы"),
-            self._rail_item(ft.Icon(ft.Icons.STAR, size=18,
-                                    color=C.TEXT if fav_active else C.STAR),
-                            fav_active, lambda: self._set_filter("favorites"), "Избранное",
-                            fixed_color=C.STAR),
+            self._rail_item(ft.Icon(ft.Icons.VIEW_SIDEBAR, size=18,
+                                    color=C.TEXT if self.sidebar_open else C.MUTED),
+                            self.sidebar_open, lambda: self._toggle_sidebar(),
+                            "Показать/скрыть панель"),
             ft.Container(width=30, height=1, bgcolor=C.LINE_2,
                          margin=ft.margin.symmetric(3, 0)),
         ]
@@ -962,17 +964,6 @@ class CenturioUI:
             border=ft.border.all(1, C.CONTROL), border_radius=9,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
         )
-        # Кнопка панели переехала сюда с рельсы: рельса — только категории. Без
-        # заливки в активном состоянии — рядом сегментный переключатель вида, и
-        # залитая кнопка читалась как его третий сегмент.
-        sidebar_btn = ft.Container(
-            ft.Icon(ft.Icons.VIEW_SIDEBAR, size=13,
-                    color=C.TEXT if self.sidebar_open else C.MUTED_2),
-            width=34, height=34, alignment=ft.alignment.center,
-            border=ft.border.all(1, C.CONTROL), border_radius=9,
-            tooltip="Показать/скрыть панель",
-            on_click=lambda e: self._toggle_sidebar())
-        self._hoverable(sidebar_btn, None, C.SELECTED_BG)
         # Подсказка описывает то, что действительно работает: модификаторов в
         # событии клика Flet не отдаёт, диапазон берут правой кнопкой.
         right = (T("Клик — отметить · Ctrl+A — всё · правая кнопка — до этой",
@@ -980,8 +971,7 @@ class CenturioUI:
                  if self.view.select_mode and not self.calm() else
                  self.primary_btn("Добавить", self._open_add, ft.Icons.ADD, height=34))
         return ft.Container(
-            ft.Row(left + [sort_btn, view_toggle, sidebar_btn,
-                           ft.Container(expand=True), right],
+            ft.Row(left + [sort_btn, view_toggle, ft.Container(expand=True), right],
                    spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.padding.only(22, 16, 22, 10),
         )

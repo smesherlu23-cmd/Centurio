@@ -114,8 +114,8 @@ def test_store():
 
         cat = s.add_category("Тест")
         ok(cat["color"] == "#ffffff", "a new category starts with the neutral colour")
-        ok(C.category_color(cat) in C.CAT_PALETTE,
-           "which the palette turns into something visible on the rail")
+        ok(C.category_color(cat) == "#ffffff",
+           "which is the theme's own colour, not a placeholder to swap out")
         s.update_category(cat["id"], {"color": "#ff8800", "icon": "sports_esports"})
         got_cat = next(c for c in s.state()["categories"] if c["id"] == cat["id"])
         ok(got_cat["color"] == "#ff8800" and got_cat["icon"] == "sports_esports",
@@ -1326,8 +1326,8 @@ def test_color_parsing():
     ok(C.rgb_to_hex(255, 136, 0) == "#ff8800", "rgb_to_hex")
     ok(C.rgb_to_hex(999, -5, 0) == "#ff0000", "rgb_to_hex clamps")
     ok(C.category_color({"color": "#123456"}) == "#123456", "category_color uses explicit hex")
-    derived = C.category_color({"name": "Игры"})
-    ok(derived.startswith("#") and len(derived) == 7, "category_color derives from name")
+    ok(C.category_color({"name": "Игры"}) == "#ffffff",
+       "and falls back to the theme's white when nothing was chosen")
 
 
 def test_launch_options():

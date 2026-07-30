@@ -31,7 +31,7 @@ RAIL_BTN_BG = "#101014"      # круглая кнопка рельсы
 
 ACCENT = "#f5f5f7"           # главная кнопка, бейдж разбора, активный переключатель
 ON_ACCENT = "#0b0b0d"        # текст и глиф на акценте
-WHITE = "#ffffff"            # глиф категории на цветной кнопке рельса
+WHITE = "#ffffff"            # цвет категории по умолчанию, глиф на цветной кнопке
 
 # Площадка иконки приложения — она же заглушка, когда иконку достать не удалось.
 SLOT_BG = "#15151b"
@@ -257,16 +257,10 @@ def hex_to_hsl(hex_color: str) -> tuple[float, float, float]:
     return h * 360, lightness, s
 
 
-def palette_color(text: str) -> str:
-    """A stable palette entry for a category that never picked a colour."""
-    from .store import hue_from_string
-    return CAT_PALETTE[hue_from_string(text or "") % len(CAT_PALETTE)]
-
-
 def category_color(cat: dict) -> str:
-    col = parse_hex(cat.get("color"))
-    # "#ffffff" was the old default for every category: it isn't in the palette
-    # and it made four categories in a row indistinguishable in the rail.
-    if col and col != "#ffffff":
-        return col
-    return palette_color(cat.get("name") or cat.get("id") or "")
+    """A category's colour: whatever was explicitly set, white otherwise.
+
+    White is the theme's own colour, not a placeholder — a new or default
+    category stays white until someone picks something else in the popover.
+    """
+    return parse_hex(cat.get("color")) or WHITE
