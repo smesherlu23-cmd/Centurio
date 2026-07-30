@@ -940,8 +940,6 @@ def build_category_popover(ui, cat):
                        cat["id"], C.hsl_to_hex(hue, float(e.control.value) / 100))),
     ], spacing=5, tight=True, expand=True)
 
-    query = (ui.view.icon_query or "").strip().lower()
-    names = [n for n in ICON_PACK if not query or query in n][:24]
     cells = [ft.Container(
         ft.Icon(cat_icon(name), size=17,
                 color=color if name == cat.get("icon") and not cat.get("image") else C.TEXT_2),
@@ -950,9 +948,7 @@ def build_category_popover(ui, cat):
         border=ft.border.all(2, C.ACCENT) if name == cat.get("icon") and not cat.get("image")
         else ft.border.all(1, C.LINE),
         alignment=ft.alignment.center, tooltip=name,
-        on_click=lambda e, n=name: ui.set_category_icon(cat["id"], n)) for name in names]
-    if not cells:
-        cells = [T("Ничего не нашлось", size=12, color=C.MUTED_2)]
+        on_click=lambda e, n=name: ui.set_category_icon(cat["id"], n)) for name in ICON_PACK]
 
     image_row = ft.Container(
         ft.Row([ft.Icon(ft.Icons.IMAGE, size=17, color=C.MUTED),
@@ -991,13 +987,6 @@ def build_category_popover(ui, cat):
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=1, bgcolor=C.LINE_2, margin=ft.margin.symmetric(10, 0)),
             _caps("ИКОНКА"),
-            ft.Container(ft.Row([ft.Icon(ft.Icons.SEARCH, size=14, color=C.MUTED_2),
-                                 _field(ui.view.icon_query, "Название иконки", size=12.5,
-                                        on_submit=lambda e: ui.set_icon_query(e.control.value),
-                                        on_change=None)],
-                                spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                         height=32, bgcolor=C.BG_1, border=ft.border.all(1, C.LINE),
-                         border_radius=8, padding=ft.padding.symmetric(0, 10)),
             ft.Container(ft.Column([ft.Row(cells, spacing=6, wrap=True, run_spacing=6)],
                                    scroll=ft.ScrollMode.AUTO), height=120),
             image_row,

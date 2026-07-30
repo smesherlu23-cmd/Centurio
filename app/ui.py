@@ -307,19 +307,15 @@ class CenturioUI:
         # A failed save no longer kills the click that caused it, so it has to
         # be said out loud — otherwise the app looks like it saved fine.
         self.store.on_error = self._on_store_error
-        main = ft.Column(
-            [self.toolbar_holder,
-             ft.GestureDetector(self.content_holder, expand=True,
-                                on_secondary_tap_down=self._grid_background_menu)],
-            spacing=0, expand=True,
-        )
+        main = ft.Column([self.toolbar_holder, self.content_holder], spacing=0, expand=True)
         body = ft.Row([self.rail_container, self.sidebar_container, main,
                        self.inspector_container], spacing=0, expand=True)
         self.library_body.content = ft.Column([self.header_holder, body],
                                               spacing=0, expand=True)
         root = ft.Stack([self.body, self.inspector_overlay, self.palette_layer,
                          self.bulk_layer, self.popover_layer, self.onboarding_layer,
-                         self.menu.control, self.toast.control], expand=True)
+                         self.menu.control, self.toast.shade, self.toast.control],
+                        expand=True)
         self.page.add(root)
         self.refresh()
 
@@ -1848,30 +1844,6 @@ class CenturioUI:
         self.menu.show(x, y, rows,
                        header=menus.text_header(app["name"] if app else "Программа"))
 
-    def _grid_background_menu(self, e):
-        """ПКМ по пустому месту сетки — только на самой сетке."""
-        if self.view.screen == "grid" and not self.view.active_set:
-            self._empty_menu(e)
-
-    def _empty_menu(self, e):
-        x, y = self._menu_at(e)
-        waiting = len(self.inbox())
-        rows = [
-            menus.item(ft.Icons.ADD, "Найти и добавить", self._open_add),
-            menus.item(ft.Icons.FOLDER_OPEN, "Указать файл вручную", self.pick_file),
-            menus.item(ft.Icons.INBOX, "Открыть разбор", self._open_triage,
-                       hint="" if self.calm() or not waiting else str(waiting),
-                       disabled=not waiting),
-            menus.separator(),
-            menus.item(ft.Icons.CHECK_BOX_OUTLINE_BLANK, "Выбрать несколько",
-                       self._toggle_select_mode),
-            menus.item(ft.Icons.SORT, "Сортировка",
-                       lambda: self.menu.toggle_submenu("sort", self._sort_submenu(), y),
-                       submenu=True),
-            menus.item(ft.Icons.REFRESH, "Обновить список", lambda: self.rescan()),
-        ]
-        self.menu.show(x, y, rows, header=None)
-
     def _category_submenu(self, app_ids):
         rows = []
         for cat in self.categories():
@@ -2810,10 +2782,6 @@ class CenturioUI:
         self.store.update_category(cat_id, {"icon": icon, "image": None})
         self.refresh()
 
-    def set_icon_query(self, text):
-        self.view.icon_query = text or ""
-        self.refresh()
-
     def pick_category_image(self, cat_id):
         """«Своя картинка»: copy the file next to the library and point at it."""
         picker = getattr(self, "_image_picker", None)
@@ -3390,7 +3358,7 @@ class CenturioUI:
         top = C.HEADER_H + 14 + (2 + index) * (C.RAIL_BTN + 8) + 9
         height = self._window_height()
         self.popover_layer.left = C.RAIL_W + 8
-        self.popover_layer.top = max(C.HEADER_H + 6, min(top, height - 470))
+        self.popover_layer.top = max(C.HEADER_H + 6, min(top, height - C.POPOVER_H - 8))
         self.popover_layer.content = dialogs.build_category_popover(self, cat)
         self.popover_layer.visible = True
 
