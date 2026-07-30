@@ -2074,16 +2074,17 @@ def test_ui_delete_is_undone_not_confirmed():
         ok(ui.toast.action_btn.visible and ui.toast.action_label.value == "Вернуть",
            "a toast offers to put it back")
         ok(ui.toast.countdown.value == "8", "counting down from eight seconds")
-        ok(ui.toast.shade.visible,
-           "and a full-window shade blocks clicks elsewhere while «Вернуть» is live")
+        # Слой тоста шириной ровно с карточку. Растянутый на всё окно (left=0 и
+        # right=0 сразу) он съедал каждый клик на своей высоте: полоса боковой
+        # панели и сетки не отзывалась, пока не истечёт отсчёт.
+        ok(ui.toast.control.right is None and ui.toast.control.width is None,
+           "the toast layer is not pinned to both window edges")
+        left, width = ui.toast.control.left, ui.toast.card.width
+        ok(left > 0, f"it is positioned by hand instead ({left})")
+        ok(abs((left + width / 2) - 1400 / 2) <= 1,
+           "still centred over the window, just without the full-width hit box")
         ui.toast.fire_action()
         ok(store.get_app(ids[0]) is not None, "«Вернуть» restores it")
-        ok(not ui.toast.shade.visible, "firing the action lifts the block")
-
-        ui.toast.show("Иконки обновлены")
-        ok(not ui.toast.shade.visible,
-           "a plain toast with no undo has nothing to block clicks for")
-        ui.toast.dismiss()
 
         cat = store.state()["categories"][1]
         ui._move_apps_to_category(ids, cat["id"])

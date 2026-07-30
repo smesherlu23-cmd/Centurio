@@ -39,13 +39,6 @@ class ToastHost:
         self._left = 0
         self._action = None
 
-        # Пока «Вернуть» ещё можно нажать, клики мимо ничего не должны делать —
-        # иначе можно случайно продолжить работать поверх того, что вот-вот
-        # станет неотменимым. Обычные (безоткатные) тосты ничего не блокируют.
-        self.shade = ft.Container(left=0, top=0, right=0, bottom=0,
-                                  bgcolor=C.TRANSPARENT, visible=False,
-                                  on_click=lambda e: None)
-
         self.icon = ft.Icon(ft.Icons.CHECK, size=18, color=C.GREEN)
         self.text = T("", size=13, color=C.TEXT, max_lines=2,
                       overflow=ft.TextOverflow.ELLIPSIS)
@@ -70,17 +63,26 @@ class ToastHost:
                                             offset=ft.Offset(0, 20), color=C.SHADOW_TOAST),
             animate_opacity=ft.Animation(C.ANIM_FAST, ft.AnimationCurve.EASE_OUT),
         )
-        # bottom=BOTTOM with left/right pinned: the toast is centred over the
-        # window without knowing its width.
-        self.control = ft.Container(
-            ft.Row([ft.Container(self.card, width=None)],
-                   alignment=ft.MainAxisAlignment.CENTER),
-            left=0, right=0, bottom=BOTTOM, visible=False,
-        )
+        # The layer is exactly as wide as the card and positioned by hand.
+        # Pinning left=0 and right=0 and centring the card inside was simpler,
+        # but that stretched the layer across the window and it swallowed every
+        # click level with the toast — a whole strip of the sidebar and the grid
+        # went dead until the countdown ran out. ft.TransparentPointer is not the
+        # way out either: it hands the click to the card *and* to whatever is
+        # underneath, so «Вернуть» would launch the tile it happens to cover.
+        self.control = ft.Container(self.card, left=0, bottom=BOTTOM, visible=False)
 
     def lift(self, above: bool):
         """Подняться над плавающей панелью массовых операций, если она открыта."""
         self.control.bottom = BOTTOM_LIFTED if above else BOTTOM
+        self.recenter()
+
+    def recenter(self):
+        """Поставить карточку по центру окна — её ширину знает только show()."""
+        win = getattr(self.page, "window", None)
+        window_w = getattr(win, "width", None) or C.LIBRARY_W
+        width = self.card.width or C.TOAST_MIN_W
+        self.control.left = max(8.0, (window_w - width) / 2)
 
     # ---- public ----
     def show(self, text: str, icon=ft.Icons.CHECK, icon_color=C.GREEN,
@@ -109,8 +111,8 @@ class ToastHost:
             # as the two sizes a toast comes in.
             self.card.width = (C.TOAST_MIN_W if len(text) <= 48 and not detail
                                else C.TOAST_MAX_W)
+            self.recenter()
             self.control.visible = True
-            self.shade.visible = bool(action)
             self._arm(1.0 if action else PLAIN_SECONDS, token)
         self._safe_update()
 
@@ -124,7 +126,6 @@ class ToastHost:
             self._action = None
             self._cancel_timer()
             self.control.visible = False
-            self.shade.visible = False
         self._safe_update()
         if action:
             try:
@@ -137,7 +138,6 @@ class ToastHost:
             self._cancel_timer()
             self._action = None
             self.control.visible = False
-            self.shade.visible = False
         self._safe_update()
 
     def stop(self):
@@ -167,13 +167,11 @@ class ToastHost:
             self._timer = None
             if not self._action:
                 self.control.visible = False
-                self.shade.visible = False
             else:
                 self._left -= 1
                 if self._left <= 0:
                     self._action = None
                     self.control.visible = False
-                    self.shade.visible = False
                 else:
                     self.countdown.value = str(self._left)
                     self._arm(1.0, token)
@@ -185,6 +183,5 @@ class ToastHost:
         try:
             if self.control.page:
                 self.control.update()
-                self.shade.update()
         except Exception:
             log.exception("updating the toast failed")

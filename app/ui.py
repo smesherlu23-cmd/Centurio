@@ -314,8 +314,7 @@ class CenturioUI:
                                               spacing=0, expand=True)
         root = ft.Stack([self.body, self.inspector_overlay, self.palette_layer,
                          self.bulk_layer, self.popover_layer, self.onboarding_layer,
-                         self.menu.control, self.toast.shade, self.toast.control],
-                        expand=True)
+                         self.menu.control, self.toast.control], expand=True)
         self.page.add(root)
         self.refresh()
 
