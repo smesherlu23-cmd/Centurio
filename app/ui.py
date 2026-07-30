@@ -2034,20 +2034,17 @@ class CenturioUI:
         if key in ("Control", "Alt", "Shift", "Meta"):
             return
         if key == "Escape":
-            self.view.capture = False
+            self._stop_capture()
             self.refresh()
             return
-        parts = [name for flag, name in ((e.ctrl, "Ctrl"), (e.alt, "Alt"), (e.shift, "Shift"))
-                 if flag]
-        if not parts:
-            self.toast.error("Нужна комбинация с Ctrl, Alt или Shift")
-            return
+        parts = [name for flag, name in ((e.ctrl, "Ctrl"), (e.alt, "Alt"),
+                                         (e.shift, "Shift"), (e.meta, "Win")) if flag]
         accel = "+".join(parts + [key if len(key) > 1 else key.upper()])
         if is_reserved(accel):
             self.toast.error(f"{accel} занята Windows — эту комбинацию система не отдаст")
             return
         target = self.view.capture_target
-        self.view.capture = False
+        self._stop_capture()
         if target == "launch":
             self._set_launch_hotkey(accel)
         else:
@@ -2217,11 +2214,32 @@ class CenturioUI:
 
     def _begin_capture(self, target: str = "app"):
         if self.view.capture and self.view.capture_target == target:
-            self.view.capture = False
+            self._stop_capture()
         else:
-            self.view.capture = True
-            self.view.capture_target = target
+            self._start_capture(target)
         self.refresh()
+
+    def _start_capture(self, target: str):
+        """Приостановить общий слушатель на время записи.
+
+        Он глобальный и слушает независимо от того, какое окно в фокусе —
+        так что старая комбинация (в том числе та самую, что сейчас меняют)
+        могла сработать посреди записи новой и, например, спрятать окно
+        настроек. Пока идёт запись, ей просто нечем сработать.
+        """
+        self.view.capture = True
+        self.view.capture_target = target
+        cb = self.controllers.get("suspend_hotkeys")
+        if cb:
+            cb()
+
+    def _stop_capture(self):
+        if not self.view.capture:
+            return
+        self.view.capture = False
+        cb = self.controllers.get("resume_hotkeys")
+        if cb:
+            cb()
 
     def _toast_hint_quick(self):
         self.toast.show("Закрепить можно правой кнопкой по плитке — «В быстрый запуск»",
@@ -2542,6 +2560,7 @@ class CenturioUI:
                 self.refresh()
                 return
         self.store.update_app(app_id, {"hotkey": accel})
+        self._on_library_changed()
         self._on_library_changed()
         self.toast.show(f"Горячая клавиша: {accel}" if accel else "Горячая клавиша убрана",
                         icon=ft.Icons.BOLT, icon_color=C.MUTED)

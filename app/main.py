@@ -203,6 +203,9 @@ def main(page: ft.Page):
         "minimize": minimize, "toggle_maximize": toggle_maximize, "close": close,
         "hide_to_tray": hide_to_tray, "on_setting": on_setting,
         "on_library_changed": refresh_runtime,
+        # Записывая новую комбинацию, окно не должно ловить срабатывание старой
+        # той же самой — слушатель глобальный и не смотрит, какое окно в фокусе.
+        "suspend_hotkeys": hotkeys.stop, "resume_hotkeys": refresh_runtime,
     }
 
     def tray_menu():
