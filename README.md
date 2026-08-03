@@ -155,6 +155,16 @@ python tests/test_centurio.py
 
 ## Сборка Windows-инсталлятора
 
+```powershell
+.\scripts\build-windows.ps1
+```
+
+Тесты, `flet build windows`, инсталлятор Inno Setup — одной командой. В конце
+откладывает в сторону `%APPDATA%\Centurio`, если она есть на этой машине
+(`-KeepData`, чтобы не трогать), — иначе собранный `.exe` для проверки открылся
+бы с библиотекой, что накопилась за разработку, а не пустым, как у нового
+пользователя. Вручную то же самое:
+
 ```bash
 pip install "flet[all]==0.28.3"
 flet build windows -v                       # результат: build\windows\

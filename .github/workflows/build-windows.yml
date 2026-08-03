@@ -30,9 +30,6 @@ jobs:
       - name: Run test suite
         run: python tests/test_centurio.py
 
-      - name: Generate icons
-        run: python -m app.iconify
-
       - name: Build Windows app
         run: flet build windows -v
 
